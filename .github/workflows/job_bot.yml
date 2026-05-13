@@ -1,46 +1,45 @@
 # =============================================================================
 # .github/workflows/job_bot.yml
 #
-# This file tells GitHub to run your bot every 30 minutes for FREE.
-# Public repos get unlimited GitHub Actions minutes.
-# Your API keys are stored as GitHub Secrets — never exposed in code.
+# Runs your job bot every 30 minutes for FREE.
+# Public repos = unlimited GitHub Actions minutes.
+# API keys stored as encrypted GitHub Secrets — never in code.
 # =============================================================================
 
 name: Job Bot — Scrape & Score
 
 on:
-  # Run every 30 minutes, 24/7
   schedule:
-    - cron: '0,30 * * * *'   # Runs at :00 and :30 of every hour
+    - cron: '0,30 * * * *'   # Every 30 minutes, 24/7
+  workflow_dispatch:           # Manual trigger from GitHub Actions tab
 
-  # Also lets you trigger it manually from GitHub's website
-  workflow_dispatch:
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Suppress Node.js 20 warnings
 
 jobs:
   run_bot:
     name: Scrape Jobs & Score Matches
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # Kill the job if it runs too long (safety net)
+    timeout-minutes: 55   # First run scores 300+ jobs — needs up to 40 min.
+                          # Subsequent runs are much faster (~10 min).
 
     steps:
-      # ── Step 1: Check out your code from GitHub ─────────────────
+      # ── Step 1: Check out your code ─────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Step 2: Install Python ───────────────────────────────────
+      # ── Step 2: Install Python 3.12 ─────────────────────────────
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'   # Caches dependencies so installs are faster
+          cache: 'pip'
 
-      # ── Step 3: Install all dependencies ────────────────────────
+      # ── Step 3: Install dependencies ────────────────────────────
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── Step 4: Write secrets to a .env file ────────────────────
-      # GitHub Secrets are stored encrypted — never in your code.
-      # We write them to a .env file that the bot reads at runtime.
+      # ── Step 4: Write secrets to .env ───────────────────────────
       - name: Create .env from GitHub Secrets
         run: |
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
@@ -49,14 +48,11 @@ jobs:
           echo "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" >> .env
 
       # ── Step 5: Write Google credentials JSON ───────────────────
-      # The Google Sheets credentials file is stored as a secret too.
       - name: Create google_creds.json from secret
         run: echo '${{ secrets.GOOGLE_CREDS_JSON }}' > google_creds.json
 
-      # ── Step 6: Restore the seen-jobs database from cache ───────
-      # This is the key to deduplication across runs.
-      # GitHub caches the SQLite database between workflow runs so the
-      # bot remembers which jobs it already scored.
+      # ── Step 6: Restore seen-jobs database from cache ───────────
+      # Keeps memory of every job already scored across all runs.
       - name: Restore seen_jobs database
         uses: actions/cache@v4
         with:
@@ -65,16 +61,14 @@ jobs:
           restore-keys: |
             seen-jobs-db-
 
-      # ── Step 7: Run one cycle of the bot ────────────────────────
-      # We call run_once.py instead of main.py because GitHub Actions
-      # already handles the scheduling — we just need one cycle per run.
+      # ── Step 7: Run one scrape + score cycle ─────────────────────
       - name: Run job bot cycle
         run: python run_once.py
 
-      # ── Step 8: Save the updated database back to cache ─────────
+      # ── Step 8: Save updated database back to cache ──────────────
       - name: Save seen_jobs database
         uses: actions/cache@v4
-        if: always()   # Save even if the job had errors
+        if: always()
         with:
           path: seen_jobs.db
           key: seen-jobs-db-${{ github.run_number }}
