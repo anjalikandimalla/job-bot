@@ -12,7 +12,7 @@
 import re
 import os
 import time
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -29,8 +29,7 @@ from config import (
     CAP_EXEMPT_BONUS, MATCH_THRESHOLD,
 )
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-2.0-flash")
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -189,14 +188,21 @@ def score_with_gemini(job: dict, emp_type: str) -> dict | None:
         skills=", ".join(YOUR_SKILLS),
     )
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+        )
         return parse_score(response.text.strip())
     except Exception as e:
-        if "429" in str(e) or "quota" in str(e).lower():
+        if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
             print(f"    ⏳ Rate limit — waiting 65s...")
             time.sleep(65)
             try:
-                return parse_score(model.generate_content(prompt).text.strip())
+                response = client.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=prompt,
+                )
+                return parse_score(response.text.strip())
             except Exception as e2:
                 print(f"    ⚠️  Gemini retry failed: {e2}")
                 return None
