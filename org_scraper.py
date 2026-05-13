@@ -213,15 +213,14 @@ def scrape_all_greenhouse() -> list:
 # ─────────────────────────────────────────────────────────────
 
 HIGHEREDJOBS_RSS_URLS = [
-    # Administrative / Management jobs in Massachusetts
-    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=program+manager&Location=MA",
-    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=project+manager&Location=MA",
-    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=operations+manager&Location=MA",
-    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=program+coordinator&Location=MA",
-    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=project+coordinator&Location=MA",
-    # Remote-eligible higher ed jobs
-    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=program+manager&Remote=1",
-    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=operations&Remote=1",
+    # Massachusetts — specific job titles only (avoids the firehose)
+    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=program+manager&Location=MA&MaxResults=25",
+    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=project+manager&Location=MA&MaxResults=25",
+    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=program+coordinator&Location=MA&MaxResults=25",
+    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=operations+manager&Location=MA&MaxResults=25",
+    # Remote higher ed — specific titles only
+    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=program+manager&Remote=1&MaxResults=25",
+    "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=program+coordinator&Remote=1&MaxResults=25",
 ]
 
 def scrape_higheredjobs() -> list:
