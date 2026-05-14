@@ -89,7 +89,6 @@ FULLTIME_KEYWORDS = [
 # ─────────────────────────────────────────────
 CAP_EXEMPT_EMPLOYER_KEYWORDS = [
     # Universities & colleges
-    "northeastern university", "northeastern",
     "harvard university", "harvard",
     "massachusetts institute of technology", "mit",
     "boston university",
