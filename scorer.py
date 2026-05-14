@@ -137,10 +137,27 @@ def passes_local_filter(job: dict) -> tuple[bool, str, str, bool, bool]:
 # ─────────────────────────────────────────────────────────────
 
 SCORING_PROMPT = """
-You are a precise job match evaluator. Score honestly — 80+ means genuinely strong fit.
+You are a strict, honest job match evaluator for Anjali Kandimalla.
+Score conservatively — 80+ means a genuinely strong, realistic application. Do NOT inflate scores.
 
 CANDIDATE PROFILE:
 {profile}
+
+TWO RESUME VERSIONS AVAILABLE:
+
+A) "Program Management" — Use when job emphasizes:
+   - Titles with: Program Manager, Project Manager, Coordinator, Project Lead
+   - Coordination, scheduling, stakeholder alignment, multi-project tracking
+   - Working across faculty/teams, vendor/CRO management
+   - Industries: higher ed, pharma R&D, nonprofit programs, research administration
+   - Lead bullets: EDGE course coordination, Esperion CRO management, MWIN internship operations
+
+B) "Operations" — Use when job emphasizes:
+   - Titles with: Operations Manager, Operations Analyst, Process Lead, Workflow Lead
+   - Building/improving systems, process improvement, workflow design
+   - Automation, SLA management, infrastructure-from-scratch
+   - Companies needing someone to fix or build out broken processes
+   - Lead bullets: Esperion SharePoint-from-scratch, Deloitte VBA automation, EDGE SLA design
 
 JOB POSTING:
 Title: {title}
@@ -150,39 +167,67 @@ Employment Type: {emp_type}
 Description:
 {description}
 
+════════════════════════════════════════
+HARD DISQUALIFIERS — score 0 immediately:
+════════════════════════════════════════
+- Requires US citizenship, security clearance, or active secret/top secret clearance
+- Explicitly says "no visa sponsorship" or "must be authorized without sponsorship"
+- Requires 10+ years of experience (candidate has ~4-5 years)
+- Primary skill requirement is something candidate has NO background in:
+  (e.g., software engineering, clinical medicine, legal practice, investment management,
+   construction management, sales, or any role requiring a license she lacks)
+- Role is Director-level or above in scope even if not in title
+
+════════════════════════════════════════
+SCORE CAPS — apply before adding up:
+════════════════════════════════════════
+- Requires 7-9 years experience → cap EXPERIENCE_FIT at 8
+- 3+ core required skills completely missing from profile → cap SKILL_MATCH at 15
+- Primarily technical role (software, data engineering, DevOps) → cap ROLE_FIT at 10
+- Role requires license/cert candidate lacks (PMP/CAPM ok; CPA/JD/MD/PE not) → cap total at 60
+
+════════════════════════════════════════
 SCORING CRITERIA (0-100 total):
+════════════════════════════════════════
 
-1. ROLE FIT (30 pts): Does title/scope match candidate experience level?
-   Program/Project/Operations Manager or Coordinator → 25-30
-   Analyst, Specialist, operational adjacent → 15-24
-   Highly technical, clinical, legal → 0-14
+1. ROLE FIT (30 pts): How well does scope match ~4 yrs program/project/ops management?
+   Direct PM/Coordinator/Operations role at right level → 25-30
+   Adjacent operational role (analyst, specialist, admin) → 15-24
+   Tangentially related → 5-14
+   Completely different function → 0-4
 
-2. SKILL MATCH (35 pts): How many candidate skills appear in JD?
-   Skills to check: {skills}
-   7+ match → 30-35 | 4-6 → 20-29 | 1-3 → 10-19 | 0 → 0-9
+2. SKILL MATCH (35 pts): How many of candidate's skills appear in JD?
+   Candidate skills: {skills}
+   Match 7+ explicitly → 30-35
+   Match 4-6 → 20-29
+   Match 1-3 → 10-19
+   Match 0 or JD requires skills she doesn't have → 0-9
 
-3. EXPERIENCE FIT (20 pts): Does required experience match ~6 years?
-   0-5 yrs required → full | 5-7 yrs → partial | 8+ yrs → low
+3. EXPERIENCE FIT (20 pts):
+   Requires 0-4 yrs → 15-20 (good match)
+   Requires 4-6 yrs → 18-20 (ideal)
+   Requires 7-9 yrs → 5-10 (stretch)
+   Requires 10+ yrs → 0 (hard disqualifier above)
 
 4. ENVIRONMENT FIT (15 pts):
-   Higher ed, healthcare, research, consulting, nonprofits → 12-15
-   Tech/SaaS operations → 8-11
-   Highly specialized, no transferable context → 0-7
+   Higher ed, healthcare, research, nonprofits, consulting → 12-15
+   Corporate operations at mid-size company → 8-11
+   Highly niche industry with no transferable context → 3-7
+   Domain candidate cannot function in → 0-2
 
-RULES:
-- "No sponsorship" or "must be US citizen" → score 0
-- Role requires skills completely absent from profile → cap at 50
-- For short contract roles: do not penalize for no H-1B sponsorship
-
-RESPOND IN EXACTLY THIS FORMAT, nothing else:
+════════════════════════════════════════
+RESPOND IN EXACTLY THIS FORMAT — nothing else:
+════════════════════════════════════════
 SCORE: [0-100]
 ROLE_FIT: [0-30]
 SKILL_MATCH: [0-35]
 EXPERIENCE_FIT: [0-20]
 ENVIRONMENT_FIT: [0-15]
-TOP_MATCHING_SKILLS: [comma-separated]
-MISSING_SKILLS: [comma-separated or "None"]
-SUMMARY: [2-3 sentences]
+TOP_MATCHING_SKILLS: [comma-separated list from candidate skills appearing in JD]
+MISSING_SKILLS: [key skills JD requires that candidate lacks, or "None"]
+RESUME_VERSION: [Program Management OR Operations]
+RESUME_TAILORING: [1-2 sentences with concrete advice on which bullets to emphasize for this specific role, and whether to add the Aadrika Exports supply chain bullet or Trine MS coursework]
+SUMMARY: [2 sentences: what makes this a fit and what's the biggest gap]
 """
 
 def score_with_gemini(job: dict, emp_type: str) -> dict | None:
@@ -337,6 +382,8 @@ def evaluate_job(job: dict) -> dict | None:
         "environment_fit":      scoring["environment_fit"],
         "top_matching_skills":  scoring["top_matching_skills"],
         "missing_skills":       scoring["missing_skills"],
+        "resume_version":       scoring["resume_version"],
+        "resume_tailoring":     scoring["resume_tailoring"],
         "summary":              scoring["summary"],
         "evaluated_at":         __import__('datetime').datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
