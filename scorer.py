@@ -178,6 +178,12 @@ SUMMARY: [2-3 sentences]
 """
 
 def score_with_gemini(job: dict, emp_type: str) -> dict | None:
+    global DAILY_QUOTA_EXHAUSTED
+
+    # If daily quota already confirmed exhausted, skip immediately
+    if DAILY_QUOTA_EXHAUSTED:
+        return None
+
     prompt = SCORING_PROMPT.format(
         profile=YOUR_PROFILE,
         title=job.get("title",""),
@@ -193,9 +199,28 @@ def score_with_gemini(job: dict, emp_type: str) -> dict | None:
             contents=prompt,
         )
         return parse_score(response.text.strip())
+
     except Exception as e:
-        if "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e):
-            print(f"    ⏳ Rate limit — waiting 65s...")
+        err = str(e)
+        is_quota = "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower()
+
+        if not is_quota:
+            print(f"    ⚠️  Gemini error: {e}")
+            return None
+
+        # Distinguish daily limit vs per-minute limit
+        is_daily = "PerDayPer" in err or "GenerateRequestsPerDay" in err
+
+        if is_daily:
+            # Daily quota gone — no point retrying ANY jobs this run
+            DAILY_QUOTA_EXHAUSTED = True
+            print(f"    🚫 Daily quota exhausted — skipping all remaining scoring this cycle.")
+            print(f"       Quota resets at midnight UTC (8 PM Eastern).")
+            print(f"       Or create a new API key at aistudio.google.com for fresh quota.")
+            return None
+        else:
+            # Per-minute limit — wait and retry once
+            print(f"    ⏳ Per-minute rate limit — waiting 65s...")
             time.sleep(65)
             try:
                 response = client.models.generate_content(
@@ -204,10 +229,13 @@ def score_with_gemini(job: dict, emp_type: str) -> dict | None:
                 )
                 return parse_score(response.text.strip())
             except Exception as e2:
-                print(f"    ⚠️  Gemini retry failed: {e2}")
+                err2 = str(e2)
+                if "PerDayPer" in err2 or "GenerateRequestsPerDay" in err2:
+                    DAILY_QUOTA_EXHAUSTED = True
+                    print(f"    🚫 Daily quota exhausted — skipping remaining scoring.")
+                else:
+                    print(f"    ⚠️  Gemini retry failed: {e2}")
                 return None
-        print(f"    ⚠️  Gemini error: {e}")
-        return None
 
 def parse_score(raw: str) -> dict:
     r = {"score":0,"role_fit":0,"skill_match":0,"experience_fit":0,
