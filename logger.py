@@ -36,7 +36,9 @@ SHEET_HEADERS = [
     "Verify H-1B Link",
     "Match %", "Raw Score", "Cap Bonus",
     "Role Fit /30", "Skill Match /35", "Exp Fit /20", "Env Fit /15",
-    "Matching Skills", "Missing Skills", "AI Summary",
+    "Matching Skills", "Missing Skills",
+    "Suggested Resume", "Tailoring Notes",
+    "AI Summary",
     "Apply Link", "Posted Date",
 ]
 
@@ -56,9 +58,9 @@ def _get_sheet():
     try:
         ws = sh.worksheet("Job Matches")
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Job Matches", rows=2000, cols=25)
+        ws = sh.add_worksheet(title="Job Matches", rows=2000, cols=28)
         ws.append_row(SHEET_HEADERS)
-        ws.format("A1:V1", {"textFormat": {"bold": True}, "backgroundColor": {"red":0.12,"green":0.23,"blue":0.37}})
+        ws.format("A1:X1", {"textFormat": {"bold": True}, "backgroundColor": {"red":0.12,"green":0.23,"blue":0.37}})
         ws.freeze(rows=1)
     _sheet_cache = ws
     return ws
@@ -91,6 +93,8 @@ def log_to_sheets(r: dict):
         r.get("environment_fit",""),
         r.get("top_matching_skills",""),
         r.get("missing_skills",""),
+        r.get("resume_version",""),
+        r.get("resume_tailoring",""),
         r.get("summary",""),
         r.get("url",""),
         r.get("posted_date",""),
@@ -207,49 +211,99 @@ def send_match_email(r: dict):
         print(f"  ⚠️  Email error: {e}")
 
 
-def send_daily_digest(results: list):
+def send_digest_email(results: list):
+    """
+    Send a 3-hour digest of the top-N matches.
+    results should already be sorted by score desc and sliced to top N.
+    """
     if not results or not GMAIL_PASSWORD:
         return
-    date_str = datetime.now().strftime("%B %d, %Y")
-    subject  = f"📋 Daily Job Digest — {len(results)} matches | {date_str}"
 
-    contracts  = [r for r in results if r.get("is_short_contract")]
-    fulltime   = [r for r in results if not r.get("is_short_contract")]
+    now_str  = datetime.now().strftime("%B %d, %Y %I:%M %p")
+    contracts = [r for r in results if r.get("is_short_contract")]
+    fulltime  = [r for r in results if not r.get("is_short_contract")]
 
-    def make_rows(items):
-        rows = ""
-        for r in sorted(items, key=lambda x: x.get("match_score",0), reverse=True):
-            h1b = r.get("h1b_status","")
-            rows += f"""<tr>
-              <td style="padding:7px;border-bottom:1px solid #e5e7eb;">
-                <a href="{r.get('url','#')}" style="color:#1e3a5f;font-weight:bold;">{r.get('title','')}</a>
-              </td>
-              <td style="padding:7px;border-bottom:1px solid #e5e7eb;">{r.get('company','')}</td>
-              <td style="padding:7px;border-bottom:1px solid #e5e7eb;">{r.get('location','')}</td>
-              <td style="padding:7px;border-bottom:1px solid #e5e7eb;font-weight:bold;color:#1a7f3c;">{r.get('match_score','')}%</td>
-              <td style="padding:7px;border-bottom:1px solid #e5e7eb;font-size:11px;">{h1b}</td>
-            </tr>"""
-        return rows
+    def score_color(s):
+        if s >= 90: return "#1a7f3c"
+        if s >= 85: return "#2563eb"
+        return "#d97706"
 
-    html = f"""<div style="font-family:Arial,sans-serif;max-width:750px;">
-      <h2 style="color:#1e3a5f;">📋 Daily Job Digest — {date_str}</h2>
-      <p>{len(results)} total matches (≥80%) — {len(contracts)} contract, {len(fulltime)} full-time.</p>
-      <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px;">
-        <tr style="background:#1e3a5f;color:white;">
-          <th style="padding:8px;text-align:left;">Title</th>
-          <th style="padding:8px;text-align:left;">Company</th>
-          <th style="padding:8px;text-align:left;">Location</th>
-          <th style="padding:8px;text-align:left;">Match</th>
-          <th style="padding:8px;text-align:left;">H-1B Status</th>
-        </tr>
-        {"<tr><td colspan='5' style='padding:8px;background:#f0fdf4;font-weight:bold;color:#166534;'>📋 Contract Roles (≤6 months)</td></tr>" if contracts else ""}
-        {make_rows(contracts)}
-        {"<tr><td colspan='5' style='padding:8px;background:#eff6ff;font-weight:bold;color:#1e3a5f;'>💼 Full-Time Roles (Cap-Exempt H-1B)</td></tr>" if fulltime else ""}
-        {make_rows(fulltime)}
+    def h1b_badge(r):
+        if r.get("is_short_contract"):
+            return "<span style='background:#7c3aed;color:white;padding:1px 7px;border-radius:10px;font-size:10px;'>CPT</span>"
+        if r.get("is_verified_h1b"):
+            return "<span style='background:#1a7f3c;color:white;padding:1px 7px;border-radius:10px;font-size:10px;'>✅ H-1B</span>"
+        if r.get("is_cap_exempt"):
+            return "<span style='background:#d97706;color:white;padding:1px 7px;border-radius:10px;font-size:10px;'>⭐ Cap-Exempt</span>"
+        return ""
+
+    def make_card(r, rank):
+        sc = r.get("match_score", 0)
+        missing = r.get("missing_skills","") or "None"
+        matching = r.get("top_matching_skills","") or ""
+        resume = r.get("resume_version","Program Management")
+        tailoring = r.get("resume_tailoring","")
+        resume_color = "#7c3aed" if "Operations" in resume else "#1e3a5f"
+        return f"""
+        <tr>
+          <td style="padding:14px;border-bottom:2px solid #e5e7eb;vertical-align:top;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span style="font-size:18px;font-weight:bold;color:#6b7280;">#{rank}</span>
+              <span style="font-size:22px;font-weight:bold;color:{score_color(sc)};">{sc}%</span>
+              {h1b_badge(r)}
+            </div>
+            <div style="font-size:15px;font-weight:bold;margin-bottom:2px;">
+              <a href="{r.get('url','#')}" style="color:#1e3a5f;text-decoration:none;">{r.get('title','')}</a>
+            </div>
+            <div style="color:#6b7280;font-size:13px;margin-bottom:6px;">
+              {r.get('company','')} &bull; {r.get('location','')} &bull; {r.get('employment_type','')}
+            </div>
+            <div style="background:#f9fafb;border-left:3px solid {resume_color};padding:6px 10px;margin:6px 0;font-size:12px;">
+              <strong style="color:{resume_color};">📄 Use: {resume} resume</strong>
+              {f'<div style="color:#374151;margin-top:3px;">{tailoring}</div>' if tailoring else ""}
+            </div>
+            <div style="font-size:12px;color:#166534;margin-bottom:3px;">✅ Matching: {matching}</div>
+            {f'<div style="font-size:12px;color:#92400e;">⚠️ Missing: {missing}</div>' if missing and missing != "None" else ""}
+            <div style="font-size:12px;color:#374151;margin-top:6px;font-style:italic;">{r.get('summary','')}</div>
+            <div style="margin-top:8px;">
+              <a href="{r.get('url','#')}" style="background:#1e3a5f;color:white;padding:5px 14px;border-radius:5px;text-decoration:none;font-size:12px;">Apply →</a>
+              &nbsp;<span style="font-size:11px;color:#9ca3af;">Posted: {r.get('posted_date','')}</span>
+            </div>
+          </td>
+        </tr>"""
+
+    all_cards = ""
+    if fulltime:
+        all_cards += f"<tr><td style='padding:10px;background:#eff6ff;font-weight:bold;color:#1e3a5f;font-size:14px;'>💼 Full-Time Cap-Exempt Roles ({len(fulltime)})</td></tr>"
+        for i, r in enumerate(fulltime, 1):
+            all_cards += make_card(r, i)
+    if contracts:
+        all_cards += f"<tr><td style='padding:10px;background:#f0fdf4;font-weight:bold;color:#166534;font-size:14px;'>📋 Contract Roles ≤6 months ({len(contracts)})</td></tr>"
+        for i, r in enumerate(contracts, 1):
+            all_cards += make_card(r, i)
+
+    html = f"""<div style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;">
+      <div style="background:#1e3a5f;padding:16px 20px;border-radius:8px 8px 0 0;">
+        <h2 style="color:white;margin:0;font-size:20px;">🎯 Top {len(results)} Job Matches</h2>
+        <p style="color:#93c5fd;margin:4px 0 0;font-size:13px;">{now_str} &bull; Sorted by match score</p>
+      </div>
+      <div style="background:#f8fafc;padding:10px 20px;border:1px solid #e2e8f0;border-top:0;">
+        <p style="margin:0;font-size:13px;color:#374151;">
+          {len(results)} matches from the past 3 hours &bull;
+          {len(fulltime)} full-time cap-exempt &bull; {len(contracts)} contract &bull;
+          All jobs scored ≥80% against your profile.
+          Full details in your <a href="#" style="color:#2563eb;">Job Bot Log</a> Google Sheet.
+        </p>
+      </div>
+      <table style="width:100%;border-collapse:collapse;">
+        {all_cards}
       </table>
-      <p style="font-size:12px;color:#6b7280;">Full details in your Google Sheet.</p>
+      <div style="padding:12px 20px;background:#f8fafc;border:1px solid #e2e8f0;border-top:0;border-radius:0 0 8px 8px;font-size:11px;color:#9ca3af;">
+        Next digest in ~3 hours. Only jobs posted in the last 24 hours are scored.
+      </div>
     </div>"""
 
+    subject = f"🎯 {len(results)} Job Matches | {datetime.now().strftime('%b %d %I:%M %p')}"
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = NOTIFY_EMAIL
@@ -259,6 +313,10 @@ def send_daily_digest(results: list):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
             s.login(NOTIFY_EMAIL, GMAIL_PASSWORD)
             s.sendmail(NOTIFY_EMAIL, NOTIFY_EMAIL, msg.as_string())
-        print(f"  📧 Digest sent: {subject}")
+        print(f"  📧 Sent: {subject}")
     except Exception as e:
-        print(f"  ⚠️  Digest error: {e}")
+        print(f"  ⚠️  Digest email error: {e}")
+
+
+# Keep old name as alias so nothing breaks if called from elsewhere
+def send_daily_digest(results): send_digest_email(results)
