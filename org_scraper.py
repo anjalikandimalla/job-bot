@@ -31,6 +31,17 @@ SEARCH_TERMS = [
     "associate program manager", "associate project manager",
 ]
 
+
+def posted_within_days(posted_str: str, days: int = 3) -> bool:
+    """Return True if the job was posted within the last N days."""
+    if not posted_str:
+        return True   # No date info — include it (can't exclude what we can't check)
+    try:
+        posted = datetime.strptime(posted_str[:10], '%Y-%m-%d')
+        return (datetime.now() - posted).days <= days
+    except Exception:
+        return True
+
 def make_id(url, title, company):
     return hashlib.md5(f"{url}{title}{company}".lower().encode()).hexdigest()
 
@@ -88,6 +99,8 @@ def scrape_workday_org(org: dict, search_term: str) -> list:
             job_url  = f"https://{tenant}.wd1.myworkdayjobs.com{ext_path}"
             posted   = p.get("postedOn", "")[:10] if p.get("postedOn") else ""
 
+            # Note: date filtering handled by deduplication DB
+
             # Location
             loc_data = p.get("locationsText", "") or p.get("location", {})
             if isinstance(loc_data, dict):
@@ -126,16 +139,24 @@ def scrape_all_workday(max_orgs=None) -> list:
     all_jobs = []
     print(f"  Workday: scraping {len(orgs)} orgs × {len(SEARCH_TERMS)} terms...")
 
+    zero_results = []
     for org in orgs:
         org_jobs = []
         for term in SEARCH_TERMS:
             results = scrape_workday_org(org, term)
             org_jobs.extend(results)
-            time.sleep(1.0)   # Polite delay
+            time.sleep(1.0)
 
         if org_jobs:
             print(f"    ✓ {org['name']}: {len(org_jobs)} listings")
+        else:
+            zero_results.append(org['name'])
         all_jobs.extend(org_jobs)
+
+    if zero_results:
+        print(f"    ⚠️  0 results from {len(zero_results)} orgs: {', '.join(zero_results[:5])}")
+        if len(zero_results) > 5:
+            print(f"       ...and {len(zero_results)-5} more")
 
     return all_jobs
 
