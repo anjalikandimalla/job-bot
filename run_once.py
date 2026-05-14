@@ -25,7 +25,7 @@ MAX_SCORE_PER_RUN = 80
 
 # Only consider jobs posted within the last N days
 # Set to 0 to disable freshness filtering (e.g. for debugging)
-MAX_AGE_DAYS = 3
+MAX_AGE_DAYS = 15
 
 RELEVANT_TITLE_KEYWORDS = [
     "program manager", "project manager", "operations manager",
