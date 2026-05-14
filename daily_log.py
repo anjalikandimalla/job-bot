@@ -78,24 +78,15 @@ def _get_today_tab() -> "gspread.Worksheet | None":
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=today, rows=2000, cols=len(HEADERS) + 1)
         ws.append_row(HEADERS)
-        ws.format(f"A1:{chr(64+len(HEADERS))}1", {
-            "textFormat": {"bold": True},
-            "backgroundColor": {"red": 0.12, "green": 0.23, "blue": 0.37},
-            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-        })
-        ws.freeze(rows=1)
-        # Set column widths for readability
         try:
-            sh.batch_update({"requests": [{
-                "updateDimensionProperties": {
-                    "range": {"sheetId": ws.id, "dimension": "COLUMNS",
-                              "startIndex": 0, "endIndex": len(HEADERS)},
-                    "properties": {"pixelSize": 150},
-                    "fields": "pixelSize"
-                }
-            }]})
-        except Exception:
-            pass  # Column width is cosmetic — skip if it fails
+            ws.format(f"A1:{chr(64+len(HEADERS))}1", {
+                "textFormat": {"bold": True},
+                "backgroundColor": {"red": 0.12, "green": 0.23, "blue": 0.37},
+            })
+            ws.freeze(rows=1)
+        except Exception as fmt_err:
+            print(f"  ⚠️  [DailyLog] Header formatting skipped: {fmt_err}")
+
 
     _tab_cache[today] = ws
     return ws
