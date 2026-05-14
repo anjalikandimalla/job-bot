@@ -44,12 +44,30 @@ RELEVANT_TITLE_KEYWORDS = [
     "portfolio manager", "initiative manager",
 ]
 
+# Titles containing these words are never relevant regardless of other keywords
+TITLE_BLOCKLIST = [
+    "professor", "lecturer", "adjunct", "faculty",
+    "teaching assistant", "postdoc", "researcher",
+    "attorney", "counsel", "paralegal",
+    "nurse", "physician", "therapist", "clinician",
+    "engineer", "developer", "architect", "scientist",
+    "accountant", "auditor", "actuary",
+    "store manager", "retail", "restaurant",
+]
+
 def title_is_relevant(title: str) -> bool:
     title_lower = title.lower()
     padded = f" {title_lower} "
+
+    # Hard blocklist — skip even if title has a PM keyword
+    if any(bl in title_lower for bl in TITLE_BLOCKLIST):
+        return False
+
+    # Too-senior check
     for word in REJECT_SENIORITY_KEYWORDS:
         if f" {word} " in padded:
             return False
+
     return any(kw in title_lower for kw in RELEVANT_TITLE_KEYWORDS)
 
 
@@ -102,8 +120,6 @@ def run():
     for i, job in enumerate(to_score, 1):
         icon = "🏛️" if job.get("cap_exempt") else "📋"
         print(f"  [{i}/{len(to_score)}] {icon} {job.get('title')} @ {job.get('company')}")
-
-        mark_seen(job["id"], job.get("title",""), job.get("company",""), job.get("url",""))
 
         result = evaluate_job(job)
 
