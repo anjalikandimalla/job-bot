@@ -13,12 +13,12 @@
 import time
 from datetime import datetime
 
-from config import MATCH_THRESHOLD, SEND_INSTANT_EMAIL, REJECT_SENIORITY_KEYWORDS
+from config import MATCH_THRESHOLD, SEND_INSTANT_EMAIL, SEND_DAILY_DIGEST, REJECT_SENIORITY_KEYWORDS
 from database import init_db, is_seen, mark_seen, get_seen_count
 from scraper import scrape_all_sources
 from org_scraper import scrape_all_orgs
 from scorer import evaluate_job
-from logger import log_to_sheets, send_match_email
+from logger import log_to_sheets, send_match_email, send_daily_digest
 from daily_log import log_scraped_job, batch_log_unscored, send_unscored_digest
 
 MAX_SCORE_PER_RUN = 80
@@ -232,6 +232,11 @@ def run():
         batch_log_unscored(deferred)
         for job in deferred:
             mark_seen(job["id"], job.get("title",""), job.get("company",""), job.get("url",""))
+
+    # ── Send one combined match email for this run ───────────────
+    if matches and SEND_DAILY_DIGEST:
+        send_daily_digest(matches)
+        print(f"  📧 Match digest sent: {len(matches)} matches")
 
     # ── Summary ─────────────────────────────────────────────────
     elapsed   = (datetime.now() - start).seconds
