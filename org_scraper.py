@@ -70,64 +70,66 @@ def job(title, company, location, description, url, source, cap_exempt=True, pos
 
 def scrape_workday_org(org: dict, search_term: str) -> list:
     """
-    Uses Workday's public job search API.
-    Pattern: POST https://{tenant}.wd1.myworkdayjobs.com/wday/cxs/{tenant}/{career_site}/jobs
+    Workday public job search API.
+    Tries multiple career site name variants because orgs use different names.
     """
     tenant = org["tenant"]
-    site   = org.get("career_site", "External")
-    url    = f"https://{tenant}.wd1.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
 
-    payload = {
-        "limit": 20,
-        "offset": 0,
-        "searchText": search_term,
-        "appliedFacets": {}
-    }
+    # Try common career site name variants
+    sites = [org.get("career_site", "External"), "External", "ExternalCareerSite",
+             "careers", "Careers", "external", "HR"]
+    seen_sites = []
+    for s in sites:
+        if s not in seen_sites:
+            seen_sites.append(s)
 
-    try:
-        resp = requests.post(url, json=payload, headers=HEADERS, timeout=12)
-        if resp.status_code != 200:
-            return []
+    payload = {"limit": 20, "offset": 0,
+               "searchText": search_term, "appliedFacets": {}}
 
-        data     = resp.json()
-        postings = data.get("jobPostings", [])
-        results  = []
+    for site in seen_sites:
+        url = f"https://{tenant}.wd1.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
+        try:
+            resp = requests.post(url, json=payload, headers=HEADERS, timeout=10)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            postings = data.get("jobPostings", [])
+            if not postings:
+                continue
 
-        for p in postings:
-            title    = p.get("title", "")
-            ext_path = p.get("externalPath", "")
-            job_url  = f"https://{tenant}.wd1.myworkdayjobs.com{ext_path}"
-            posted   = p.get("postedOn", "")[:10] if p.get("postedOn") else ""
+            # This site variant works — cache it
+            org["career_site"] = site
+            results = []
+            for p in postings:
+                title    = p.get("title", "")
+                ext_path = p.get("externalPath", "")
+                job_url  = f"https://{tenant}.wd1.myworkdayjobs.com{ext_path}"
+                posted   = p.get("postedOn", "")[:10] if p.get("postedOn") else ""
 
-            # Note: date filtering handled by deduplication DB
+                loc_data = p.get("locationsText", "") or p.get("location", {})
+                location = loc_data.get("descriptor", "") if isinstance(loc_data, dict) else str(loc_data)
 
-            # Location
-            loc_data = p.get("locationsText", "") or p.get("location", {})
-            if isinstance(loc_data, dict):
-                location = loc_data.get("descriptor", "")
-            else:
-                location = str(loc_data)
+                desc = p.get("jobDescription", {})
+                if isinstance(desc, dict):
+                    desc = desc.get("descriptor", "")
+                desc = clean(desc) or f"See full description at {job_url}"
 
-            # Brief description from listing (full description needs another call)
-            description = p.get("jobDescription", {})
-            if isinstance(description, dict):
-                description = description.get("descriptor", "")
-            description = clean(description) or f"See full description at {job_url}"
+                results.append(job(
+                    title=title,
+                    company=org["name"],
+                    location=location or "Massachusetts",
+                    description=desc,
+                    url=job_url,
+                    source=f"Direct: {org['name']}",
+                    cap_exempt=True,
+                    posted_date=posted,
+                ))
+            return results
 
-            results.append(job(
-                title=title,
-                company=org["name"],
-                location=location or "Massachusetts",
-                description=description if len(description) > 30 else f"{org['name']} — {title}. See full job description at: {job_url}",
-                url=job_url,
-                source=f"Direct: {org['name']}",
-                cap_exempt=True,
-                posted_date=posted,
-            ))
-        return results
+        except Exception:
+            continue
 
-    except Exception as e:
-        return []
+    return []
 
 
 def scrape_all_workday(max_orgs=None) -> list:
