@@ -46,6 +46,7 @@ jobs:
           echo "GOOGLE_SHEET_ID=${{ secrets.GOOGLE_SHEET_ID }}" >> .env
           echo "NOTIFY_EMAIL=${{ secrets.NOTIFY_EMAIL }}" >> .env
           echo "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" >> .env
+          echo "SCRAPE_LOG_SHEET_ID=${{ secrets.SCRAPE_LOG_SHEET_ID }}" >> .env
 
       # ── Step 5: Write Google credentials JSON ───────────────────
       - name: Create google_creds.json from secret
