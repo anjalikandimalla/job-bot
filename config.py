@@ -220,8 +220,8 @@ Feedback Fruits, PowerPoint, Python (beginner), SQL (beginner)
 # 10. SCORING & NOTIFICATION SETTINGS
 # ─────────────────────────────────────────────
 MATCH_THRESHOLD        = 80
-CAP_EXEMPT_BONUS       = 10
-POLL_INTERVAL_MINUTES  = 30
+CAP_EXEMPT_BONUS       = 2
+POLL_INTERVAL_MINUTES  = 180
 NOTIFY_EMAIL           = os.getenv("NOTIFY_EMAIL", "anjalikandimalla81@gmail.com")
 SEND_INSTANT_EMAIL     = True
 SEND_DAILY_DIGEST      = True
