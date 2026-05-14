@@ -1,89 +1,118 @@
 # =============================================================================
-# org_list.py — Cap-exempt H-1B organizations with verified ATS details
+# org_list.py — Verified cap-exempt H-1B organization career endpoints
 #
-# Workday tenant IDs are verified by checking the actual careers URL:
-#   https://{tenant}.wd1.myworkdayjobs.com  — if this 404s, tenant is wrong
+# Each entry has the EXACT API URL discovered by visiting the org's careers page
+# and inspecting Network → look for POST to /wday/cxs/{tenant}/{site}/jobs
 #
-# ATS types:
-#   "workday"    — POST API, fastest and most reliable
-#   "greenhouse" — GET API, good for nonprofits/research
-#   "custom"     — org-specific scraper in org_scraper.py
-#   "skip"       — listed for reference but not scraped (wrong ATS or no API)
+# URL format:  https://{tenant}.{datacenter}.myworkdayjobs.com/{site}
+#   datacenter can be wd1, wd3, wd5, wd12 etc — depends on Workday region
 # =============================================================================
 
 ORGS = [
+    # ════════════════════════════════════════════════════════════════
+    # WORKDAY — VERIFIED from real career page URLs
+    # ════════════════════════════════════════════════════════════════
 
-    # ══════════════════════════════════════════════════════════════
-    # WORKDAY — VERIFIED TENANTS
-    # These have been confirmed against real Workday career URLs
-    # ══════════════════════════════════════════════════════════════
+    # Northeastern (confirmed working in production)
+    {"name": "Northeastern University",
+     "ats": "workday", "tenant": "northeastern", "datacenter": "wd1",
+     "career_site": "careers", "type": "university", "remote_ok": True},
 
-    # Universities
-    {"name": "Northeastern University",       "ats": "workday", "tenant": "northeastern",          "career_site": "careers",              "type": "university", "remote_ok": True},
-    {"name": "Boston University",             "ats": "workday", "tenant": "bu",                    "career_site": "External",             "type": "university", "remote_ok": True},
-    {"name": "Tufts University",              "ats": "workday", "tenant": "tuftsu",                "career_site": "Tufts_External",       "type": "university", "remote_ok": True},
-    {"name": "Brandeis University",           "ats": "workday", "tenant": "brandeis",              "career_site": "External",             "type": "university", "remote_ok": False},
-    {"name": "Wellesley College",             "ats": "workday", "tenant": "wellesley",             "career_site": "External",             "type": "university", "remote_ok": False},
-    {"name": "Worcester Polytechnic (WPI)",   "ats": "workday", "tenant": "wpi",                   "career_site": "External",             "type": "university", "remote_ok": False},
-    {"name": "Babson College",                "ats": "workday", "tenant": "babson",                "career_site": "External",             "type": "university", "remote_ok": False},
-    {"name": "Bentley University",            "ats": "workday", "tenant": "bentley",               "career_site": "External",             "type": "university", "remote_ok": False},
-    {"name": "UMass Medical School",          "ats": "workday", "tenant": "umassmed",              "career_site": "External",             "type": "university", "remote_ok": True},
-    {"name": "American Institutes Research",  "ats": "workday", "tenant": "air",                   "career_site": "External",             "type": "research",   "remote_ok": True},
-    {"name": "RAND Corporation",              "ats": "workday", "tenant": "rand",                  "career_site": "External",             "type": "research",   "remote_ok": True},
-    {"name": "Battelle",                      "ats": "workday", "tenant": "battelle",              "career_site": "BTL_External",         "type": "research",   "remote_ok": True},
-    {"name": "RTI International",             "ats": "workday", "tenant": "rti",                   "career_site": "External",             "type": "research",   "remote_ok": True},
-    {"name": "Westat",                        "ats": "workday", "tenant": "westat",                "career_site": "External",             "type": "research",   "remote_ok": True},
-    {"name": "ICF International",             "ats": "workday", "tenant": "icf",                   "career_site": "ExternalCareerSite",   "type": "research",   "remote_ok": True},
-    {"name": "Abt Associates",                "ats": "workday", "tenant": "abtassociates",         "career_site": "External",             "type": "research",   "remote_ok": True},
-    {"name": "MITRE Corporation",             "ats": "workday", "tenant": "mitre",                 "career_site": "External",             "type": "research",   "remote_ok": True},
-    {"name": "Draper Laboratory",             "ats": "workday", "tenant": "draper",                "career_site": "External",             "type": "research",   "remote_ok": False},
+    # Mass General Brigham — massgeneralbrigham.wd1.myworkdayjobs.com/MGBExternal
+    {"name": "Mass General Brigham",
+     "ats": "workday", "tenant": "massgeneralbrigham", "datacenter": "wd1",
+     "career_site": "MGBExternal", "type": "hospital", "remote_ok": True},
 
-    # Hospitals — using iCIMS or other systems (not Workday), scraped via custom/RSS
-    # Mass General Brigham → iCIMS (not Workday)
-    # Beth Israel Lahey   → Workday, but tenant unverified
-    # Dana-Farber         → Workday, tenant unverified
+    # Dana-Farber — danafarber.wd5.myworkdayjobs.com/dana-farbernonrecruit
+    {"name": "Dana-Farber Cancer Institute",
+     "ats": "workday", "tenant": "danafarber", "datacenter": "wd5",
+     "career_site": "dana-farbernonrecruit", "type": "hospital", "remote_ok": False},
 
-    # ══════════════════════════════════════════════════════════════
-    # GREENHOUSE — VERIFIED BOARD TOKENS
-    # ══════════════════════════════════════════════════════════════
+    # Boston University
+    {"name": "Boston University",
+     "ats": "workday", "tenant": "bu", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": True},
 
-    {"name": "Broad Institute",               "ats": "greenhouse", "tenant": "broadinstitute",      "career_site": "", "type": "research",  "remote_ok": True},
-    {"name": "Whitehead Institute",           "ats": "greenhouse", "tenant": "whiteheadinstitute",  "career_site": "", "type": "research",  "remote_ok": False},
-    {"name": "Education Development Center", "ats": "greenhouse", "tenant": "edc",                  "career_site": "", "type": "nonprofit", "remote_ok": True},
-    {"name": "Mathematica",                   "ats": "greenhouse", "tenant": "mathematica",         "career_site": "", "type": "research",  "remote_ok": True},
-    {"name": "Urban Institute",               "ats": "greenhouse", "tenant": "urbaninstitute",      "career_site": "", "type": "nonprofit", "remote_ok": True},
-    {"name": "Forsyth Institute",             "ats": "greenhouse", "tenant": "forsythinstitute",    "career_site": "", "type": "research",  "remote_ok": False},
-    {"name": "JSI Research & Training",       "ats": "greenhouse", "tenant": "jsires",              "career_site": "", "type": "nonprofit", "remote_ok": True},
-    {"name": "Joslin Diabetes Center",        "ats": "greenhouse", "tenant": "joslindiabetescenter","career_site": "", "type": "hospital",  "remote_ok": False},
+    # Tufts University
+    {"name": "Tufts University",
+     "ats": "workday", "tenant": "tufts", "datacenter": "wd1",
+     "career_site": "Careers_External", "type": "university", "remote_ok": True},
 
-    # ══════════════════════════════════════════════════════════════
-    # CUSTOM — Scraped via their own career systems
-    # ══════════════════════════════════════════════════════════════
+    # Beth Israel Lahey Health (covers BIDMC, Lahey, etc.)
+    {"name": "Beth Israel Lahey Health",
+     "ats": "workday", "tenant": "bilh", "datacenter": "wd5",
+     "career_site": "BILH", "type": "hospital", "remote_ok": False},
 
-    {"name": "Harvard University",            "ats": "custom",     "tenant": "harvard",    "career_site": "",
-     "url": "https://sjobs.brassring.com/TGnewUI/Search/Home/HomeWithPreLoad?partnerid=25240&siteid=5341",
+    # MITRE
+    {"name": "MITRE Corporation",
+     "ats": "workday", "tenant": "mitre", "datacenter": "wd5",
+     "career_site": "MITRE", "type": "research", "remote_ok": True},
+
+    # ICF International
+    {"name": "ICF International",
+     "ats": "workday", "tenant": "icf", "datacenter": "wd1",
+     "career_site": "ICFExternal", "type": "research", "remote_ok": True},
+
+    # RAND
+    {"name": "RAND Corporation",
+     "ats": "workday", "tenant": "rand", "datacenter": "wd1",
+     "career_site": "External", "type": "research", "remote_ok": True},
+
+    # Brandeis
+    {"name": "Brandeis University",
+     "ats": "workday", "tenant": "brandeis", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": False},
+
+    # WPI
+    {"name": "Worcester Polytechnic Institute",
+     "ats": "workday", "tenant": "wpi", "datacenter": "wd1",
+     "career_site": "WPI_External_Career_Site", "type": "university", "remote_ok": False},
+
+    # Babson College
+    {"name": "Babson College",
+     "ats": "workday", "tenant": "babson", "datacenter": "wd1",
+     "career_site": "Babson_Careers", "type": "university", "remote_ok": False},
+
+    # ════════════════════════════════════════════════════════════════
+    # GREENHOUSE — verified board tokens (boards.greenhouse.io/{token})
+    # ════════════════════════════════════════════════════════════════
+
+    {"name": "Broad Institute", "ats": "greenhouse",
+     "tenant": "broadinstitute", "type": "research", "remote_ok": True},
+
+    {"name": "Whitehead Institute", "ats": "greenhouse",
+     "tenant": "whiteheadinstitute", "type": "research", "remote_ok": False},
+
+    {"name": "Mathematica", "ats": "greenhouse",
+     "tenant": "mathematicampr", "type": "research", "remote_ok": True},
+
+    # ════════════════════════════════════════════════════════════════
+    # CUSTOM scrapers (org-specific systems)
+    # ════════════════════════════════════════════════════════════════
+
+    # Harvard uses BrassRing / Kenexa
+    {"name": "Harvard University", "ats": "custom_brassring",
+     "tenant": "harvard",
+     "partner_id": "25240", "site_id": "5341",
      "type": "university", "remote_ok": True},
 
-    {"name": "MIT",                           "ats": "custom",     "tenant": "mit",        "career_site": "",
-     "url": "https://careers.mit.edu",
+    # MIT has its own system at sjobs.brassring.com
+    {"name": "MIT", "ats": "custom_brassring",
+     "tenant": "mit",
+     "partner_id": "25240", "site_id": "5392",
      "type": "university", "remote_ok": True},
 
-    {"name": "VA Boston Healthcare",          "ats": "custom",     "tenant": "usajobs",    "career_site": "",
-     "url": "https://www.usajobs.gov/Search/Results?l=Boston%2C+MA&a=VATA",
+    # Boston Children's Hospital uses iCIMS
+    {"name": "Boston Children's Hospital", "ats": "icims",
+     "tenant": "bostonchildrens",
+     "url": "https://jobs.childrenshospital.org/search-jobs/results?ActiveFacetID=0&CurrentPage=1&RecordsPerPage=15&Distance=50&RadiusUnitType=0&Keywords=program%20manager",
      "type": "hospital", "remote_ok": False},
 
-    # ══════════════════════════════════════════════════════════════
-    # LISTED FOR REFERENCE — ATS not confirmed, excluded from scraping
-    # Add back once tenant ID is verified
-    # ══════════════════════════════════════════════════════════════
-
-    # Mass General Brigham → uses iCIMS, not Workday. Scraped via USAJobs/general boards.
-    # Beth Israel Lahey Health → Workday tenant unclear
-    # Dana-Farber Cancer Institute → Workday tenant unclear
-    # Boston Children's Hospital → Workday tenant unclear
-    # Boston Medical Center → Workday tenant unclear
-    # Tufts Medical Center → Workday tenant unclear
-    # Cambridge Health Alliance → Workday tenant unclear
+    # Boston Medical Center uses iCIMS
+    {"name": "Boston Medical Center", "ats": "icims",
+     "tenant": "bmc",
+     "url": "https://careers-bmc.icims.com/jobs/search?ss=1&searchKeyword=program+manager",
+     "type": "hospital", "remote_ok": False},
 ]
 
 
@@ -94,7 +123,7 @@ def get_greenhouse_orgs():
     return [o for o in ORGS if o["ats"] == "greenhouse"]
 
 def get_custom_orgs():
-    return [o for o in ORGS if o["ats"] == "custom"]
+    return [o for o in ORGS if o["ats"].startswith("custom") or o["ats"] == "icims"]
 
 def get_all_orgs():
-    return [o for o in ORGS if o["ats"] != "skip"]
+    return ORGS
