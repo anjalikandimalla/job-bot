@@ -27,6 +27,8 @@ LOCATIONS = ["Boston, MA", "Remote"]
 REJECT_SENIORITY_KEYWORDS = [
     "director", "vice president", "vp", "chief",
     "cto", "coo", "ceo", "head of", "executive director", "principal",
+    "staff program", "staff project", "staff technical",  # too senior at tech cos
+    "sr. program", "sr. project", "sr. operations",       # abbreviation for Senior
 ]
 
 # ─────────────────────────────────────────────
@@ -89,6 +91,7 @@ FULLTIME_KEYWORDS = [
 # ─────────────────────────────────────────────
 CAP_EXEMPT_EMPLOYER_KEYWORDS = [
     # Universities & colleges
+    "northeastern university", "northeastern",
     "harvard university", "harvard",
     "massachusetts institute of technology", "mit",
     "boston university",
@@ -124,6 +127,8 @@ CAP_EXEMPT_EMPLOYER_KEYWORDS = [
     "mass general brigham", "partners healthcare",
     "umass memorial", "baystate health",
     "shriners hospital", "new england baptist",
+    "northwell health", "northwell",
+    "montefiore", "mount sinai", "nyu langone",   # NY hospital systems that hire remote
     "harrington hospital", "cooley dickinson",
     # Nonprofit research
     "broad institute", "whitehead institute",
