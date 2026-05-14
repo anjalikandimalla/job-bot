@@ -13,10 +13,6 @@ ORGS = [
     # WORKDAY — VERIFIED from real career page URLs
     # ════════════════════════════════════════════════════════════════
 
-    # Northeastern (confirmed working in production)
-    {"name": "Northeastern University",
-     "ats": "workday", "tenant": "northeastern", "datacenter": "wd1",
-     "career_site": "careers", "type": "university", "remote_ok": True},
 
     # Mass General Brigham — massgeneralbrigham.wd1.myworkdayjobs.com/MGBExternal
     {"name": "Mass General Brigham",
