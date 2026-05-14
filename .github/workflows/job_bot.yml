@@ -10,7 +10,7 @@ name: Job Bot — Scrape & Score
 
 on:
   schedule:
-  - cron: "0 */3 * * *"   # Every 3 hours, 24/7
+    - cron: '0 */3 * * *'   # Every 3 hours, 24/7 (8 runs/day)
   workflow_dispatch:           # Manual trigger from GitHub Actions tab
 
 env:
@@ -20,8 +20,8 @@ jobs:
   run_bot:
     name: Scrape Jobs & Score Matches
     runs-on: ubuntu-latest
-    timeout-minutes: 55   # First run scores 300+ jobs — needs up to 40 min.
-                          # Subsequent runs are much faster (~10 min).
+    timeout-minutes: 55   # Each 3-hour run scores fresh jobs — up to 40 min.
+                          # Typical runs are 10-20 min.
 
     steps:
       # ── Step 1: Check out your code ─────────────────────────────
