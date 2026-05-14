@@ -203,7 +203,7 @@ def score_with_gemini(job: dict, emp_type: str) -> dict | None:
     )
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
         )
         return parse_score(response.text.strip())
@@ -232,7 +232,7 @@ def score_with_gemini(job: dict, emp_type: str) -> dict | None:
             time.sleep(65)
             try:
                 response = client.models.generate_content(
-                    model="gemini-2.0-flash",
+                    model="gemini-2.5-flash",
                     contents=prompt,
                 )
                 return parse_score(response.text.strip())
