@@ -31,6 +31,9 @@ from config import (
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
+# Stops all scoring if daily quota is confirmed exhausted this run
+DAILY_QUOTA_EXHAUSTED = False
+
 
 # ─────────────────────────────────────────────────────────────
 # EMPLOYMENT TYPE DETECTION
