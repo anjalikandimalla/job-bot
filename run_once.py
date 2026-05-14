@@ -23,6 +23,10 @@ from daily_log import log_scraped_job, batch_log_unscored, send_unscored_digest
 
 MAX_SCORE_PER_RUN = 80
 
+# Only consider jobs posted within the last N days
+# Set to 0 to disable freshness filtering (e.g. for debugging)
+MAX_AGE_DAYS = 3
+
 RELEVANT_TITLE_KEYWORDS = [
     "program manager", "project manager", "operations manager",
     "program coordinator", "project coordinator",
@@ -54,6 +58,67 @@ TITLE_BLOCKLIST = [
     "accountant", "auditor", "actuary",
     "store manager", "retail", "restaurant",
 ]
+
+def is_recent_posting(job: dict, max_age_days: int = MAX_AGE_DAYS) -> bool:
+    """
+    Return True if the job was posted within the last N days.
+    Tries multiple date formats: YYYY-MM-DD, ISO 8601, RFC 2822, relative phrases.
+    If date is empty/unparseable, treat as fresh (don't filter out).
+    """
+    if max_age_days <= 0:
+        return True
+
+    posted = (job.get("posted_date") or "").strip()
+    if not posted:
+        return True  # No date — assume fresh
+
+    # Relative phrases like "Posted Today", "3 days ago", "Just posted"
+    p_lower = posted.lower()
+    if any(p in p_lower for p in ["today", "hours ago", "just posted", "minutes ago", "new"]):
+        return True
+    if "yesterday" in p_lower or "1 day ago" in p_lower:
+        return True
+    # "2 days ago", "3 days ago", etc
+    import re
+    m = re.search(r"(\d+)\s*days?\s*ago", p_lower)
+    if m:
+        return int(m.group(1)) <= max_age_days
+    m = re.search(r"(\d+)\s*weeks?\s*ago", p_lower)
+    if m:
+        return False  # weeks ago = not fresh
+    m = re.search(r"(\d+)\s*months?\s*ago", p_lower)
+    if m:
+        return False
+
+    # Try absolute date formats
+    from datetime import datetime
+    formats = [
+        "%Y-%m-%d",                   # 2026-05-14
+        "%Y-%m-%dT%H:%M:%S",          # ISO 8601
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%a, %d %b %Y %H:%M:%S %Z",   # RFC 2822 (e.g. "Mon, 13 May 2026 12:00:00 GMT")
+        "%a, %d %b %Y %H:%M:%S",
+        "%d %b %Y",
+    ]
+    for fmt in formats:
+        try:
+            posted_dt = datetime.strptime(posted[:30].strip(), fmt)
+            age_days = (datetime.now() - posted_dt).days
+            return age_days <= max_age_days
+        except (ValueError, TypeError):
+            continue
+
+    # Try ISO date with just first 10 chars
+    try:
+        posted_dt = datetime.strptime(posted[:10], "%Y-%m-%d")
+        age_days = (datetime.now() - posted_dt).days
+        return age_days <= max_age_days
+    except (ValueError, TypeError):
+        pass
+
+    # Unparseable — keep it (better to include than miss)
+    return True
+
 
 def title_is_relevant(title: str) -> bool:
     title_lower = title.lower()
