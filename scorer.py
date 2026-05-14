@@ -107,9 +107,14 @@ def passes_local_filter(job: dict) -> tuple[bool, str, str, bool, bool]:
         if f" {word} " in padded_title:
             return False, f"Too senior: '{word}' in title", "unknown", False, False
 
-    # 3. Description length
-    if len(job.get("description", "")) < 20:
-        return False, "Description too short to score", "unknown", False, False
+    # 3. Description length — if too short, try fetching from the URL
+    if len(job.get("description", "")) < 50:
+        fetched = _try_fetch_description(job.get("url", ""))
+        if fetched and len(fetched) > 50:
+            job["description"] = fetched
+        elif len(job.get("description", "")) < 20:
+            # Still nothing usable — use title + company as minimal description
+            job["description"] = f"Job at {job.get('company','')}: {job.get('title','')}. Full description at {job.get('url','')}."
 
     # 4. Detect employment type
     emp_type = detect_employment_type(job)
