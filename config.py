@@ -170,14 +170,45 @@ VERIFIED_H1B_SPONSORS = [
 # 8. YOUR SKILLS
 # ─────────────────────────────────────────────
 YOUR_SKILLS = [
-    "smartsheet", "sharepoint", "microsoft teams", "ms teams",
-    "cross-functional", "cross functional", "stakeholder management",
-    "stakeholder", "process improvement", "vba", "excel",
-    "supply chain", "operations", "program operations", "program management",
-    "project management", "data analysis", "reporting", "dashboard",
-    "onboarding", "coordination", "curriculum", "lms", "canvas",
-    "agile", "scrum", "waterfall", "pmp", "risk management",
-    "vendor management", "budget", "kpi", "metrics",
+    # Program/Project Management — primary
+    "program management", "project management", "program coordination",
+    "project coordination", "program operations", "operations",
+    "stakeholder management", "cross-functional coordination",
+    "cross-functional", "milestone tracking", "deliverable management",
+    "multi-project management", "concurrent workstreams",
+    "scheduling", "timeline management",
+    "risk management", "risk escalation", "escalation",
+    # Operations & process
+    "process improvement", "workflow design", "process standardization",
+    "SLA management", "cycle time reduction", "operational infrastructure",
+    "systems design",
+    # Vendor / external partner
+    "vendor management", "vendor coordination",
+    "CRO management", "CRO coordination", "contract research organization",
+    "NDA", "MSA", "contract lifecycle", "vendor invoicing",
+    "external stakeholder", "partner coordination",
+    # Budget / financial
+    "budget tracking", "budget forecasting", "cost tracking",
+    "financial tracking", "budget management",
+    # Documentation / systems
+    "SharePoint", "Smartsheet", "MS Teams", "Microsoft Teams",
+    "knowledge management", "documentation",
+    "Canvas LMS", "LMS",
+    # Technical
+    "Excel", "Excel VBA", "VBA", "advanced Excel", "Excel formulas",
+    "PowerPoint", "dashboard design", "data cleaning",
+    # Communication
+    "executive communication", "executive presentations",
+    "business writing", "reporting",
+    # Event / meeting coordination
+    "event coordination", "event planning",
+    "scientific advisory board", "SAB", "KOL management",
+    # Industry experience
+    "higher education", "pharmaceutical R&D", "rare disease",
+    "R&D operations", "supply chain", "consulting",
+    # Cross-cutting
+    "onboarding", "student operations", "learner support",
+    "problem solving", "self-directed", "initiative",
 ]
 
 # ─────────────────────────────────────────────
@@ -185,35 +216,58 @@ YOUR_SKILLS = [
 # ─────────────────────────────────────────────
 YOUR_PROFILE = """
 NAME: Anjali Kandimalla
-WORK AUTHORIZATION: F-1 CPT student
-- FULL-TIME roles: needs cap-exempt H-1B sponsor (university/hospital/nonprofit)
+LOCATION: Boston, MA
+WORK AUTHORIZATION: F-1 student with CPT
+- FULL-TIME roles: requires cap-exempt H-1B sponsor (university/teaching hospital/nonprofit research)
 - CONTRACT ≤6 months: no sponsorship needed (CPT covers this)
-TOTAL EXPERIENCE: ~6 years
+TOTAL RELEVANT EXPERIENCE: ~4+ years across pharma R&D, higher ed, and consulting
 
-CURRENT ROLE (Jan 2024 – Present):
-Lead Teaching Assistant & Program Operations Lead — Northeastern University EDGE
-- Manage grading workflows, rubric design, TA operations across two graduate courses
-- Built Smartsheet and SharePoint infrastructure for course operations
-- Coordinate with faculty, CEO mentors, and 100+ students
-- End-to-end feedback cycles using Feedback Fruits and Microsoft Teams
-- Canvas gradebook automation and Excel/VBA formula tools
+EXPERIENCE:
 
-PREVIOUS (2021–2024): R&D Program Operations — Esperion Therapeutics
-- Coordinated SAB meetings, R&D Day events, cross-functional timelines
-- Built Smartsheet tracking systems and SharePoint repositories
-- Supported regulatory and clinical operations documentation
+1) Northeastern University EDGE (Jan 2024 – Apr 2026)
+   Lead Teaching Assistant & Program Coordinator, Online MBA
+   - Coordinated 20+ MBA courses; 2-3 concurrent per term; classes 30-100 students
+   - Worked across 8+ faculty, course managers, instructional design, ed-tech
+   - Inherited and improved Smartsheet/SharePoint setup: milestone tracking, communication logs, content repos
+   - <24h response SLA on student/faculty inquiries; designed escalation routing
+   - Built Canvas-ready grading workflows; Excel gradebooks from Canvas CSV exports
 
-PREVIOUS (Jul 2019–Sep 2020): Consultant — Deloitte
-- Process improvement and operational efficiency projects
-- VBA automation tools in Excel; cross-functional coordination
+2) Esperion Therapeutics (Jun 2022 – Aug 2023)
+   R&D Program Fellow (PM-level work)
+   - Two-person R&D team; managed 3-6 external CRO relationships
+   - Cross-functional with Legal, Finance, Contracting, Scientific Affairs for NDAs/MSAs/budgets
+   - Built SharePoint documentation + MS Teams workflows FROM SCRATCH (no prior infrastructure)
+   - Reduced contract approval cycle time ~30% by standardizing handoffs
+   - Owned R&D budget tracking + FY24 forecast
+   - Coordinated quarterly Scientific Advisory Board meetings with 15+ KOLs
+   - Created exec presentations for C-suite, board, R&D Day investor event, partnership discussions
+
+3) Northeastern MWIN (Sep 2021 – May 2022)
+   Project Manager
+   - Internship operations for 25+ high school students with industry partners
+   - Built centralized tracking systems; risk registers; stakeholder logs
+
+4) Deloitte (Jul 2019 – Sep 2020)
+   Advisory Analyst (Audit & Advisory)
+   - Self-taught VBA; automated reporting workflows (~40% turnaround reduction, ~400 hrs/year saved)
+   - Built reusable Excel dashboards/templates adopted team-wide
 
 EDUCATION:
-- MS Engineering Management — Trine University (in progress, Dec 2027)
-- MBA — Northeastern (May 2024), Supply Chain/Operations + Sustainability
+- MS Engineering Management — Trine University (in progress, expected Dec 2027)
+- MBA — Northeastern (May 2024), Sustainability & Operations and Supply Chain Management
 - B.Tech Computer Science — GITAM University (May 2019)
 
-KEY TOOLS: Smartsheet, SharePoint, Microsoft Teams, Excel/VBA, Canvas LMS,
-Feedback Fruits, PowerPoint, Python (beginner), SQL (beginner)
+TOOLS (proficiency-rated):
+- Strong (daily/professional use): Excel (advanced + formulas), PowerPoint, Canvas LMS
+- Competent (regular use): Smartsheet, SharePoint, MS Teams, VBA
+- Familiar (limited/self-learning only): Tableau, Power BI, Jira, Confluence, Monday.com, Asana, Python, SQL
+
+KEY DIFFERENTIATORS:
+- Builds operational infrastructure FROM NOTHING (Esperion SharePoint, EDGE rebuild)
+- Thrives with limited resources (two-person team at Esperion, no PM tools)
+- Cross-level coordination: C-suite, board, KOLs, faculty, students
+- Self-directed learner (VBA at Deloitte, strategic portfolio contributions at Esperion)
+- CS degree + MBA combination — technical AND business literate
 """
 
 # ─────────────────────────────────────────────
