@@ -10,7 +10,7 @@ name: Job Bot — Scrape & Score
 
 on:
   schedule:
-    - cron: '0,30 * * * *'   # Every 30 minutes, 24/7
+  - cron: "0 */3 * * *"   # Every 3 hours, 24/7
   workflow_dispatch:           # Manual trigger from GitHub Actions tab
 
 env:
