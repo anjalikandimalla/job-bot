@@ -1,5 +1,13 @@
 # =============================================================================
 # run_once.py — One full scrape + score cycle (used by GitHub Actions)
+#
+# Flow:
+#   1. Scrape all sources
+#   2. Title pre-filter (fast, local — no API)
+#   3. Log ALL relevant jobs to Daily Scrape Log sheet (separate workbook)
+#   4. Score with Gemini — if quota hits, stop scoring early
+#   5. Log 80%+ matches to main Job Bot Log + email alerts
+#   6. If quota exhausted: email unscored digest + they're already in Daily Log
 # =============================================================================
 
 import time
@@ -11,6 +19,7 @@ from scraper import scrape_all_sources
 from org_scraper import scrape_all_orgs
 from scorer import evaluate_job
 from logger import log_to_sheets, send_match_email
+from daily_log import log_scraped_job, batch_log_unscored, send_unscored_digest
 
 MAX_SCORE_PER_RUN = 80
 
@@ -53,6 +62,7 @@ def run():
     init_db()
     print(f"DB: {get_seen_count()} jobs seen so far\n")
 
+    # ── Scrape ──────────────────────────────────────────────────
     general_jobs = scrape_all_sources()
     org_jobs     = scrape_all_orgs()
     all_jobs     = org_jobs + general_jobs
@@ -64,26 +74,30 @@ def run():
         print("Nothing new this cycle.")
         return
 
-    # Title pre-filter
+    # ── Title pre-filter ────────────────────────────────────────
     relevant   = [j for j in new_jobs if title_is_relevant(j.get("title", ""))]
     irrelevant = [j for j in new_jobs if not title_is_relevant(j.get("title", ""))]
 
     for job in irrelevant:
         mark_seen(job["id"], job.get("title",""), job.get("company",""), job.get("url",""))
 
-    print(f"Title pre-filter: {len(relevant)} relevant | {len(irrelevant)} irrelevant (skipped)")
+    print(f"Title pre-filter: {len(relevant)} relevant | {len(irrelevant)} irrelevant (skipped)\n")
 
     if not relevant:
         print("No relevant titles this cycle.")
         return
 
+    # ── Score (capped per run) ──────────────────────────────────
     to_score = relevant[:MAX_SCORE_PER_RUN]
     deferred = relevant[MAX_SCORE_PER_RUN:]
     if deferred:
-        print(f"Deferring {len(deferred)} jobs to next cycle (cap={MAX_SCORE_PER_RUN}/run)")
+        print(f"Note: {len(deferred)} jobs deferred to next cycle (cap={MAX_SCORE_PER_RUN}/run)\n")
 
-    matches = []
-    print(f"\nScoring {len(to_score)} jobs...\n")
+    matches      = []
+    scored_count = 0
+    quota_hit_at = None   # index where quota was exhausted
+
+    print(f"Scoring {len(to_score)} jobs...\n")
 
     for i, job in enumerate(to_score, 1):
         icon = "🏛️" if job.get("cap_exempt") else "📋"
@@ -92,35 +106,67 @@ def run():
         mark_seen(job["id"], job.get("title",""), job.get("company",""), job.get("url",""))
 
         result = evaluate_job(job)
+
+        import scorer
+        if scorer.DAILY_QUOTA_EXHAUSTED:
+            quota_hit_at = i
+            # Log this job as unscored (scoring was attempted but quota hit)
+            log_scraped_job(job, score_result=None)
+            print(f"\n  Quota exhausted at job {i}. Stopping scoring.")
+            break
+
+        # Log to daily scrape sheet (with score if we got one)
+        log_scraped_job(job, score_result=result)
+
         if result:
+            scored_count += 1
             matches.append(result)
             log_to_sheets(result)
             if SEND_INSTANT_EMAIL:
                 send_match_email(result)
 
-        # Import here to get the live value of the flag
-        import scorer
-        if scorer.DAILY_QUOTA_EXHAUSTED:
-            remaining = len(to_score) - i
-            print(f"\nDaily quota exhausted after {i} jobs.")
-            print(f"  {remaining} jobs deferred — will score in tomorrow's runs.")
-            print(f"  Quota resets at midnight UTC (8 PM Eastern).")
-            break
-
         time.sleep(5)
 
+    # ── Handle quota exhaustion ─────────────────────────────────
+    if quota_hit_at is not None:
+        # Jobs that weren't attempted at all
+        not_attempted = to_score[quota_hit_at:] + deferred
+
+        print(f"\n  Logging {len(not_attempted)} unscored jobs to Daily Scrape Log...")
+        batch_log_unscored(not_attempted)
+
+        # Mark them as seen so they aren't re-queued tomorrow
+        # (they'll appear in the daily log for manual review)
+        for job in not_attempted:
+            mark_seen(job["id"], job.get("title",""), job.get("company",""), job.get("url",""))
+
+        # Email unscored digest
+        all_unscored = to_score[quota_hit_at - 1:] + deferred  # include the one that hit quota
+        send_unscored_digest(all_unscored, scored_count=scored_count)
+        print(f"  Quota reset: midnight UTC (8 PM Eastern). Bot resumes scoring automatically.")
+
+    elif deferred:
+        # Quota fine, but some deferred jobs — log them to daily sheet too
+        print(f"\n  Logging {len(deferred)} deferred jobs to Daily Scrape Log...")
+        batch_log_unscored(deferred)
+        for job in deferred:
+            mark_seen(job["id"], job.get("title",""), job.get("company",""), job.get("url",""))
+
+    # ── Summary ─────────────────────────────────────────────────
     elapsed   = (datetime.now() - start).seconds
     contracts = [m for m in matches if m.get("is_short_contract")]
     fulltime  = [m for m in matches if not m.get("is_short_contract")]
 
     print(f"\n{'─'*60}")
-    print(f"Done in {elapsed}s | Matches >= {MATCH_THRESHOLD}%: {len(matches)} "
-          f"({len(contracts)} contract | {len(fulltime)} full-time)")
+    print(f"Done in {elapsed}s")
+    print(f"  Scored: {scored_count} | Matches >= {MATCH_THRESHOLD}%: {len(matches)}")
+    print(f"  ({len(contracts)} contract | {len(fulltime)} full-time cap-exempt)")
+
     if matches:
-        print("\nTop matches:")
+        print("\n  Top matches this cycle:")
         for m in sorted(matches, key=lambda x: x['match_score'], reverse=True)[:8]:
             icon = "📋" if m.get("is_short_contract") else ("✅" if m.get("is_verified_h1b") else "⭐")
-            print(f"  {m['match_score']}% {icon} {m['title']} @ {m['company']}")
+            print(f"    {m['match_score']}% {icon} {m['title']} @ {m['company']}")
     print(f"{'─'*60}\n")
 
 
