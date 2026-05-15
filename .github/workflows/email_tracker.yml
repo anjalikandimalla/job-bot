@@ -41,6 +41,7 @@ jobs:
           echo "NOTIFY_EMAIL=${{ secrets.NOTIFY_EMAIL }}" >> .env
           echo "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" >> .env
           echo "TRACKER_SHEET_ID=${{ secrets.TRACKER_SHEET_ID }}" >> .env
+          echo "GOOGLE_SHEET_ID=${{ secrets.GOOGLE_SHEET_ID }}" >> .env
 
       - name: Create google_creds.json
         run: echo '${{ secrets.GOOGLE_CREDS_JSON }}' > google_creds.json
