@@ -15,7 +15,7 @@ def _conn():
 
 def init_db():
     with _conn() as c:
-        # Seen jobs — dedup across all runs
+        # Create seen_jobs with new schema
         c.execute("""
             CREATE TABLE IF NOT EXISTS seen_jobs (
                 id TEXT PRIMARY KEY,
@@ -25,6 +25,14 @@ def init_db():
                 seen_at TEXT
             )
         """)
+
+        # Migrate old schema: old DB used 'job_id', new schema uses 'id'
+        cols = [row[1] for row in c.execute("PRAGMA table_info(seen_jobs)")]
+        for old_col in ["job_id", "url_hash", "hash"]:
+            if old_col in cols and "id" not in cols:
+                print(f"  DB migration: renaming '{old_col}' -> 'id'")
+                c.execute(f"ALTER TABLE seen_jobs RENAME COLUMN {old_col} TO id")
+                break
         # Digest queue — matches waiting to be sent in the next 3-hour digest
         c.execute("""
             CREATE TABLE IF NOT EXISTS digest_queue (
