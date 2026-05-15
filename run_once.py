@@ -2,16 +2,22 @@
 # run_once.py — One scrape + score cycle (runs every 3 hours via GitHub Actions)
 #
 # Flow:
-#   1. Scrape all sources
-#   2. Title pre-filter (local, no API)
-#   3. Freshness filter (24-hour window)
-#   4. Score with Gemini
-#   5. Send digest of THIS run's top 20 matches
-#   6. Log all matches to Google Sheets
+#   1. Scrape general job boards + direct cap-exempt org career pages
+#   2. Local title / freshness / eligibility filters before any Gemini call
+#   3. Score a capped number of fresh eligible jobs with Gemini
+#   4. Log matches to the main Job Bot Log
+#   5. Log unscored/deferred jobs to the Daily Scrape Log
+#   6. Send ONE digest email for this run's top matches
 #
-# No-repeat guarantee: seen_jobs DB marks every job after scoring.
-# A job never appears in two digests because it is never re-scored.
+# Important behavior:
+#   - Irrelevant, stale, locally rejected, and attempted jobs are marked seen.
+#   - Deferred jobs caused only by MAX_SCORE_PER_RUN are NOT marked seen, so they
+#     can be tried in the next run while still fresh.
+#   - If Gemini daily quota is exhausted, the remaining relevant jobs are logged
+#     and emailed as unscored, then marked seen to avoid repeated quota emails.
 # =============================================================================
+
+from __future__ import annotations
 
 import re
 import time
@@ -22,6 +28,7 @@ from database import init_db, is_seen, mark_seen, get_seen_count
 from scraper import scrape_all_sources
 from org_scraper import scrape_all_orgs
 from scorer import evaluate_job
+import scorer  # read scorer.DAILY_QUOTA_EXHAUSTED after evaluate_job()
 from logger import log_to_sheets, send_digest_email
 from daily_log import log_scraped_job, batch_log_unscored, send_unscored_digest
 
@@ -29,9 +36,10 @@ from daily_log import log_scraped_job, batch_log_unscored, send_unscored_digest
 # SETTINGS
 # ─────────────────────────────────────────────────────────────
 
-MAX_SCORE_PER_RUN = 80    # Gemini free tier: 1500/day, 8 runs/day = safe
-MAX_AGE_DAYS      = 1      # Only score jobs posted in the last 24 hours
-DIGEST_TOP_N      = 20    # Top N matches to include in the digest email
+MAX_SCORE_PER_RUN = 80   # Safe cap for Gemini free tier
+MAX_AGE_DAYS      = 1    # Score only jobs posted in the last 24 hours when date is known
+DIGEST_TOP_N      = 20   # Top N matches to include in the digest email
+SLEEP_BETWEEN_SCORES = 5 # Helps avoid per-minute rate limits
 
 # ─────────────────────────────────────────────────────────────
 # TITLE FILTERS
@@ -70,70 +78,303 @@ TITLE_BLOCKLIST = [
 
 
 def title_is_relevant(title: str) -> bool:
-    title_lower = title.lower()
+    """Fast local title filter. No API calls."""
+    title_lower = (title or "").lower()
     padded = " " + title_lower + " "
+
     if any(bl in title_lower for bl in TITLE_BLOCKLIST):
         return False
+
     for word in REJECT_SENIORITY_KEYWORDS:
-        if " " + word + " " in padded:
+        # Keep whole-phrase matching so "coo" does not reject "coordinator".
+        if " " + word.lower() + " " in padded:
             return False
+
     return any(kw in title_lower for kw in RELEVANT_TITLE_KEYWORDS)
 
 
 def is_recent_posting(job: dict, max_age_days: int = MAX_AGE_DAYS) -> bool:
     """
     True if posted within max_age_days.
-    Org jobs (cap_exempt=True): strict — excludes if date missing or unparseable.
-    General board jobs: lenient — pre-filtered to 24h at the source.
+
+    General boards can be lenient because many feeds are already filtered to 24h
+    but may not expose clean dates. Direct org jobs are stricter because Workday / 
+    Greenhouse often return all open roles.
     """
     if max_age_days <= 0:
         return True
 
     is_org = bool(job.get("cap_exempt"))
-    posted  = (job.get("posted_date") or "").strip()
+    posted = (job.get("posted_date") or "").strip()
 
-    # Empty date
     if not posted:
         return False if is_org else True
 
     p = posted.lower()
 
-    # "Just now" / "today" / "X hours ago" / "X minutes ago"
     if any(x in p for x in ["just now", "just posted", "today", "hours ago", "minutes ago", "new"]):
         return True
 
-    # "yesterday" / "1 day ago"
     if "yesterday" in p or "1 day ago" in p:
         return max_age_days >= 1
 
-    # "N days ago" — explicit number e.g. "2 days ago"
     m = re.search(r"(\d+)\s*days?\s*ago", p)
     if m:
         return int(m.group(1)) <= max_age_days
 
-    # "30+" or "30+ days" — Workday's way of saying ≥30 days old
-    m = re.search(r"(\d+)\+", p)
-    if m:
-        return False   # Always older than any sensible window
+    # Workday sometimes uses "30+" / "30+ days" for old postings.
+    if re.search(r"\d+\+", p):
+        return False
 
-    # "N weeks ago" / "N months ago"
     if re.search(r"\d+\s*weeks?\s*ago", p) or re.search(r"\d+\s*months?\s*ago", p):
         return False
 
-    # Absolute date parsing
-    for fmt in ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ",
-                "%Y-%m-%dT%H:%M:%S+00:00",
-                "%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S", "%d %b %Y"]:
+    # Absolute date parsing.
+    formats = [
+        "%Y-%m-%d",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S+00:00",
+        "%a, %d %b %Y %H:%M:%S %Z",
+        "%a, %d %b %Y %H:%M:%S",
+        "%d %b %Y",
+    ]
+    for fmt in formats:
         try:
-            return (datetime.now() - datetime.strptime(posted[:30].strip(), fmt)).days <= max_age_days
+            posted_dt = datetime.strptime(posted[:30].strip(), fmt)
+            return (datetime.now() - posted_dt).days <= max_age_days
         except (ValueError, TypeError):
             continue
 
-    # Try YYYY-MM-DD from first 10 chars
     try:
-        return (datetime.now() - datetime.strptime(posted[:10], "%Y-%m-%d")).days <= max_age_days
+        posted_dt = datetime.strptime(posted[:10], "%Y-%m-%d")
+        return (datetime.now() - posted_dt).days <= max_age_days
     except (ValueError, TypeError):
         pass
 
-    # Unparseable date — be strict for org jobs, lenient for general boards
     return False if is_org else True
+
+
+# ─────────────────────────────────────────────────────────────
+# SMALL HELPERS
+# ─────────────────────────────────────────────────────────────
+
+def _mark_seen(job: dict) -> None:
+    """Safely mark a job as seen if it has an ID."""
+    job_id = job.get("id")
+    if not job_id:
+        return
+    mark_seen(
+        job_id,
+        job.get("title", ""),
+        job.get("company", ""),
+        job.get("url", ""),
+    )
+
+
+def _dedupe_jobs(jobs: list[dict]) -> list[dict]:
+    """Deduplicate jobs by ID, preserving first occurrence."""
+    seen_ids = set()
+    unique = []
+    for job in jobs:
+        job_id = job.get("id")
+        if not job_id or job_id in seen_ids:
+            continue
+        seen_ids.add(job_id)
+        unique.append(job)
+    return unique
+
+
+def _safe_log_daily(job: dict, result: dict | None = None, status: str | None = None) -> None:
+    """
+    Call daily_log.log_scraped_job with the newer optional status argument.
+    Falls back gracefully if GitHub still has the older daily_log.py for one run.
+    """
+    try:
+        log_scraped_job(job, score_result=result, status=status)
+    except TypeError:
+        # Older daily_log.py did not accept status=. Avoid crashing the workflow.
+        log_scraped_job(job, score_result=result)
+
+
+def _safe_batch_log_unscored(jobs: list[dict], status: str) -> None:
+    """Batch-log unscored jobs, with fallback for older daily_log.py."""
+    try:
+        batch_log_unscored(jobs, status=status)
+    except TypeError:
+        batch_log_unscored(jobs)
+
+
+# ─────────────────────────────────────────────────────────────
+# MAIN RUNNER
+# ─────────────────────────────────────────────────────────────
+
+def run() -> None:
+    start = datetime.now()
+    print("\n" + "=" * 72)
+    print(f"Cycle: {start.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 72)
+
+    init_db()
+    print(f"DB: {get_seen_count()} jobs seen so far\n")
+
+    # Reset the in-memory quota flag for this process/run.
+    scorer.DAILY_QUOTA_EXHAUSTED = False
+
+    # 1) Scrape both source groups.
+    print("📡 Scraping sources...")
+    org_jobs = scrape_all_orgs()
+    general_jobs = scrape_all_sources()
+    all_jobs = _dedupe_jobs(org_jobs + general_jobs)
+    print(f"\nScraped: {len(org_jobs)} org + {len(general_jobs)} general = {len(all_jobs)} unique jobs")
+
+    # 2) Remove jobs already seen from previous runs.
+    new_jobs = [j for j in all_jobs if not is_seen(j.get("id", ""))]
+    print(f"New jobs not in DB: {len(new_jobs)}\n")
+
+    if not new_jobs:
+        print("Nothing new this cycle.")
+        return
+
+    # 3) Title pre-filter. Mark irrelevant titles as seen so they do not repeat.
+    title_relevant = []
+    title_irrelevant = []
+    for job in new_jobs:
+        if title_is_relevant(job.get("title", "")):
+            title_relevant.append(job)
+        else:
+            title_irrelevant.append(job)
+            _mark_seen(job)
+
+    print(f"Title filter: {len(title_relevant)} relevant | {len(title_irrelevant)} irrelevant (marked seen)")
+
+    # 4) Freshness filter. Mark stale jobs as seen so old open roles do not repeat.
+    fresh = []
+    stale = []
+    for job in title_relevant:
+        if is_recent_posting(job):
+            fresh.append(job)
+        else:
+            stale.append(job)
+            _mark_seen(job)
+
+    print(f"Freshness filter (≤{MAX_AGE_DAYS} day): {len(fresh)} fresh | {len(stale)} stale (marked seen)")
+
+    if not fresh:
+        print("No fresh relevant jobs this cycle.")
+        return
+
+    # 5) Local eligibility filter from scorer.py before Gemini.
+    #    This saves API quota by removing non-cap-exempt full-time roles, long/unknown contracts,
+    #    senior roles, unpaid roles, etc. before scoring.
+    eligible = []
+    local_rejected = []
+    for job in fresh:
+        try:
+            passes, reason, emp_type, cap_exempt, verified = scorer.passes_local_filter(job)
+        except Exception as e:
+            passes, reason, emp_type, cap_exempt, verified = False, f"Local filter error: {e}", "unknown", False, False
+
+        # Preserve useful metadata for daily log/status readability.
+        job["detected_employment_type"] = emp_type
+        job["detected_cap_exempt"] = cap_exempt
+        job["detected_verified_h1b"] = verified
+
+        if passes:
+            eligible.append(job)
+        else:
+            local_rejected.append((job, reason))
+            _safe_log_daily(job, status=f"🚫 Local filter rejected: {reason}")
+            _mark_seen(job)
+
+    print(f"Eligibility filter: {len(eligible)} eligible for Gemini | {len(local_rejected)} locally rejected")
+
+    if not eligible:
+        print("No eligible jobs left after local filters.")
+        return
+
+    # 6) Score only up to the per-run cap. True deferrals stay un-seen so they can
+    #    be attempted in the next scheduled run.
+    to_score = eligible[:MAX_SCORE_PER_RUN]
+    deferred = eligible[MAX_SCORE_PER_RUN:]
+
+    print(f"\nScoring {len(to_score)} jobs with Gemini...", end="")
+    if deferred:
+        print(f" ({len(deferred)} deferred due to cap={MAX_SCORE_PER_RUN})")
+    else:
+        print()
+
+    matches = []
+    scored_attempts = 0
+    quota_exhausted = False
+
+    for idx, job in enumerate(to_score, start=1):
+        icon = "🏛️" if job.get("cap_exempt") else "📋"
+        print(f"\n[{idx}/{len(to_score)}] {icon} {job.get('title')} @ {job.get('company')}")
+
+        result = evaluate_job(job)
+
+        # If Gemini daily quota is exhausted, this job and every remaining job were
+        # not scored. Log/email them as unscored and mark them seen to prevent the
+        # same quota-failure digest every 3 hours.
+        if scorer.DAILY_QUOTA_EXHAUSTED:
+            quota_exhausted = True
+            unscored = to_score[idx - 1:] + deferred
+            print(f"\n🚫 Gemini quota exhausted. Logging {len(unscored)} unscored jobs.")
+            _safe_batch_log_unscored(unscored, status="⏸️ Quota exceeded — not scored")
+            send_unscored_digest(unscored, scored_count=scored_attempts)
+            for unscored_job in unscored:
+                _mark_seen(unscored_job)
+            break
+
+        scored_attempts += 1
+
+        if result:
+            matches.append(result)
+            log_to_sheets(result)
+            _safe_log_daily(job, result=result, status=f"✅ Scored match: {result.get('match_score', 0)}%")
+        else:
+            _safe_log_daily(job, status="📉 Scored/reviewed — below threshold or rejected by AI")
+
+        # Mark every attempted job as seen whether it matched or not.
+        _mark_seen(job)
+        time.sleep(SLEEP_BETWEEN_SCORES)
+
+    # If no quota failure happened, log true cap deferrals and leave them un-seen.
+    # They can be attempted in the next run while still within the freshness window.
+    if deferred and not quota_exhausted:
+        print(f"\n⏭️  Logging {len(deferred)} deferred jobs to Daily Scrape Log; they remain un-seen for next run.")
+        _safe_batch_log_unscored(
+            deferred,
+            status=f"⏭️ Deferred — scoring cap reached ({MAX_SCORE_PER_RUN}/run); will retry next run",
+        )
+
+    # 7) Send one digest of THIS run's top matches.
+    if matches:
+        top = sorted(matches, key=lambda x: x.get("match_score", 0), reverse=True)[:DIGEST_TOP_N]
+        print(f"\n📧 Sending digest: top {len(top)} of {len(matches)} matches from this run...")
+        send_digest_email(top)
+    else:
+        print("\nNo ≥80% matches this run — no match digest sent.")
+
+    # 8) Summary.
+    elapsed = int((datetime.now() - start).total_seconds())
+    contracts = [m for m in matches if m.get("is_short_contract")]
+    fulltime = [m for m in matches if not m.get("is_short_contract")]
+
+    print("\n" + "-" * 72)
+    print(f"Done in {elapsed}s | Attempted: {scored_attempts} | Matches ≥{MATCH_THRESHOLD}%: {len(matches)}")
+    print(f"  ({len(contracts)} contract, {len(fulltime)} full-time/cap-exempt)")
+    if deferred and not quota_exhausted:
+        print(f"  Deferred for next run: {len(deferred)}")
+    if quota_exhausted:
+        print("  Quota exhausted: unscored jobs were logged + emailed.")
+    if matches:
+        for m in sorted(matches, key=lambda x: x.get("match_score", 0), reverse=True)[:8]:
+            badge = "📋" if m.get("is_short_contract") else ("✅" if m.get("is_verified_h1b") else "⭐")
+            print(f"  {m.get('match_score')}% {badge} {m.get('title')} @ {m.get('company')}")
+    print("-" * 72 + "\n")
+
+
+if __name__ == "__main__":
+    run()
