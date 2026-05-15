@@ -147,6 +147,15 @@ try:
 except Exception:
     GEMINI_OK = False
 
+# Anjali's profile summary for fit assessment
+_PROFILE_SNIPPET = """
+Anjali Kandimalla — F-1 student, ~4 years program/project/operations management.
+Background: Northeastern EDGE (program coordination, 20+ MBA courses, Smartsheet, SharePoint),
+Esperion Therapeutics R&D (CRO management, NDAs/MSAs, budget tracking, SharePoint from scratch),
+Deloitte (VBA automation, Excel dashboards). MBA from Northeastern. Key skills: stakeholder management,
+cross-functional coordination, milestone tracking, vendor management, process improvement, budget tracking.
+"""
+
 EXTRACT_PROMPT = """
 Parse this job-related email and extract structured information.
 
@@ -156,17 +165,25 @@ DATE: {date}
 BODY:
 {body}
 
-Extract:
+CANDIDATE PROFILE:
+{profile}
+
+Extract ALL of the following. If unknown, write "Unknown" or "None".
+
 COMPANY: [employer name — not a recruiter firm unless they ARE the employer]
 ROLE: [exact job title]
-APPLY_LINK: [any URL in the email linking to the job posting or application, or "None"]
-NOTES: [recruiter name, salary, remote/hybrid, deadline, or any other key detail — or "None"]
-IS_JOB_EMAIL: [YES or NO]
+APPLY_LINK: [any URL linking to the job posting or application portal, or "None"]
+DESCRIPTION: [2-3 bullet points about the role based on the email, starting each with "• ". If not enough info, write "None".]
+WHY_FIT: [1-2 sentence paragraph explaining why the candidate above is a good fit for this specific role, mentioning specific matching skills. If not enough info about the role to assess, write "None".]
+NOTES: [recruiter name, salary range, remote/hybrid, deadline, or other key detail — or "None"]
+IS_JOB_EMAIL: [YES or NO — is this actually about a job application or opportunity?]
 
-Respond in exactly this format, one field per line. If unknown, write "Unknown".
+Respond in exactly this format, one field per line:
 COMPANY: ...
 ROLE: ...
 APPLY_LINK: ...
+DESCRIPTION: ...
+WHY_FIT: ...
 NOTES: ...
 IS_JOB_EMAIL: ...
 """
@@ -178,7 +195,8 @@ def extract_with_gemini(sender, subject, date, body) -> dict:
         resp = _client.models.generate_content(
             model="gemini-2.5-flash",
             contents=EXTRACT_PROMPT.format(
-                sender=sender, subject=subject, date=date, body=body[:2500]
+                sender=sender, subject=subject, date=date,
+                body=body[:2500], profile=_PROFILE_SNIPPET,
             ),
         )
         result = {}
@@ -186,6 +204,10 @@ def extract_with_gemini(sender, subject, date, body) -> dict:
             if ":" in line:
                 k, _, v = line.partition(":")
                 result[k.strip()] = v.strip()
+        # Clean up multi-line fields
+        for k in ["DESCRIPTION", "WHY_FIT"]:
+            if result.get(k) in ("None", "none", "Unknown", ""):
+                result[k] = ""
         return result
     except Exception as e:
         print(f"  ⚠️  Gemini: {e}")
@@ -549,6 +571,12 @@ def scan_folder(imap, folder: str, since: str, ws, sh,
             fit_paragraph = log_data.get("fit_paragraph", "")
 
             source = "Sent" if "Sent" in str(folder) else "Inbox/All Mail"
+
+            # Fall back to Gemini's extraction when Job Bot Log has no match
+            if not description:
+                description = extracted.get("DESCRIPTION", "")
+            if not fit_paragraph:
+                fit_paragraph = extracted.get("WHY_FIT", "")
 
             row_data = {
                 "company":       company,
