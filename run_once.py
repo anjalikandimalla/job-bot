@@ -30,7 +30,7 @@ from daily_log import log_scraped_job, batch_log_unscored, send_unscored_digest
 # ─────────────────────────────────────────────────────────────
 
 MAX_SCORE_PER_RUN = 80    # Gemini free tier: 1500/day, 8 runs/day = safe
-MAX_AGE_DAYS      = 1     # Only score jobs posted within last 24 hours
+MAX_AGE_DAYS      = 1     # Widened for first scrape — change back to 1 after first run
 DIGEST_TOP_N      = 20    # Top N matches to include in the digest email
 
 # ─────────────────────────────────────────────────────────────
