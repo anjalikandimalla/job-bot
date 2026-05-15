@@ -59,15 +59,28 @@ def rss(url, source):
 # 1. INDEED
 # ─────────────────────────────────────────────────────────────
 def scrape_indeed():
+    """Indeed RSS — uses working feed format with location code"""
     jobs = []
-    for term in SEARCH_TERMS_SHORT:
-        for loc in ["Boston+MA", "remote"]:
-            entries = rss(f"https://www.indeed.com/rss?q={term}&l={loc}&sort=date&fromage=1", "Indeed")
-            for e in entries:
-                company = getattr(getattr(e, 'source', None), 'title', '')
-                desc = e.get("summary","")
-                jobs.append(norm(e.get("title",""), company, loc.replace("+"," "), desc, e.get("link",""), "Indeed", e.get("published","")))
-            time.sleep(1.5)
+    searches = [
+        ("program+manager",    "Boston,+MA"),
+        ("project+manager",    "Boston,+MA"),
+        ("operations+manager", "Boston,+MA"),
+        ("program+coordinator","Boston,+MA"),
+        ("program+manager",    "remote"),
+        ("project+manager",    "remote"),
+    ]
+    for term, loc in searches:
+        url = f"https://www.indeed.com/rss?q={term}&l={loc}&sort=date&fromage=3"
+        entries = rss(url, "Indeed")
+        for e in entries:
+            title = e.get("title", "")
+            company = e.get("author", "")
+            if not company:
+                company = getattr(getattr(e, "source", None), "title", "")
+            jobs.append(norm(title, company, loc.replace("+"," "),
+                            e.get("summary",""), e.get("link",""), "Indeed",
+                            e.get("published","")))
+        time.sleep(2)
     return jobs
 
 
@@ -108,13 +121,32 @@ def scrape_linkedin():
 # 3. BUILT IN BOSTON
 # ─────────────────────────────────────────────────────────────
 def scrape_builtin():
+    """Built In Boston — scrape their job search API"""
     jobs = []
-    for term in ["program+manager","project+manager","operations","coordinator"]:
-        entries = rss(f"https://www.builtinboston.com/jobs/feed?search[keywords]={term}&search[job_types][]=full_time", "Built In Boston")
-        for e in entries:
-            jobs.append(norm(e.get("title",""), e.get("author",""), "Boston, MA",
-                             e.get("summary",""), e.get("link",""), "Built In Boston", e.get("published","")))
-        time.sleep(1.5)
+    search_terms = ["program manager", "project manager", "operations manager", "program coordinator"]
+    for term in search_terms:
+        try:
+            resp = requests.get(
+                f"https://www.builtinboston.com/jobs?search={term.replace(' ', '+')}",
+                headers=HEADERS, timeout=12)
+            soup = BeautifulSoup(resp.text, "lxml")
+            for card in soup.select("[data-id], .jobs-list__item, article.job-card"):
+                t = card.select_one("h2, h3, [class*='title']")
+                c = card.select_one("[class*='company']")
+                a = card.select_one("a[href]")
+                d = card.select_one("[class*='description'], p")
+                if t and a:
+                    href = a.get("href","")
+                    if not href.startswith("http"):
+                        href = "https://www.builtinboston.com" + href
+                    jobs.append(norm(t.get_text(strip=True),
+                                     c.get_text(strip=True) if c else "",
+                                     "Boston, MA",
+                                     d.get_text(strip=True) if d else "",
+                                     href, "Built In Boston"))
+        except Exception as e:
+            print(f"    ⚠️  Built In Boston: {e}")
+        time.sleep(2)
     return jobs
 
 
@@ -122,191 +154,244 @@ def scrape_builtin():
 # 4. IDEALIST (nonprofits — many are cap-exempt)
 # ─────────────────────────────────────────────────────────────
 def scrape_idealist():
+    """Idealist — nonprofits, many are cap-exempt"""
     jobs = []
-    for term in ["program+manager","project+manager","operations","coordinator"]:
-        entries = rss(f"https://www.idealist.org/en/jobs/rss?q={term}&loc=Boston+MA&type=JOB", "Idealist")
-        for e in entries:
-            loc = e["tags"][0].get("term","Boston, MA") if e.get("tags") else "Boston, MA"
-            jobs.append(norm(e.get("title",""), e.get("author",""), loc,
-                             e.get("summary",""), e.get("link",""), "Idealist", e.get("published","")))
-        time.sleep(1.5)
-    return jobs
-
-
-# ─────────────────────────────────────────────────────────────
-# 5. IMPACT OPPORTUNITY (mission-driven, many cap-exempt orgs)
-# ─────────────────────────────────────────────────────────────
-def scrape_impactopportunity():
-    jobs = []
-    search_terms = ["program manager", "project manager", "operations", "coordinator"]
-    for term in search_terms:
+    for term in ["program+manager", "project+manager", "operations+manager", "program+coordinator"]:
+        # Try both RSS and JSON API
         try:
-            url  = f"https://impactopportunity.org/jobs/?search={term.replace(' ','+')}"
-            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp = requests.get(
+                f"https://www.idealist.org/en/jobs?q={term}&loc=Boston+MA",
+                headers=HEADERS, timeout=12)
             soup = BeautifulSoup(resp.text, "lxml")
-            for card in soup.select(".job-listing, .job-card, article.type-job"):
-                t = card.select_one("h2, h3, .job-title")
+            for card in soup.select("[data-cy=idealist-card], article, .sc-1lfxrbt"):
+                t = card.select_one("h2, h3, [class*=title]")
+                c = card.select_one("[class*=org], [class*=company]")
                 a = card.select_one("a[href]")
-                c = card.select_one(".company, .organization, .employer")
-                l = card.select_one(".location")
                 if t and a:
-                    href = a.get("href","")
+                    href = a.get("href", "")
                     if not href.startswith("http"):
-                        href = "https://impactopportunity.org" + href
-                    jobs.append(norm(
-                        t.get_text(strip=True),
-                        c.get_text(strip=True) if c else "",
-                        l.get_text(strip=True) if l else "",
-                        "", href, "ImpactOpportunity"
-                    ))
+                        href = "https://www.idealist.org" + href
+                    jobs.append(norm(t.get_text(strip=True),
+                                     c.get_text(strip=True) if c else "",
+                                     "Boston, MA", "", href, "Idealist"))
         except Exception as e:
-            print(f"    ⚠️  ImpactOpportunity: {e}")
+            print(f"    ⚠️  Idealist: {e}")
         time.sleep(2)
     return jobs
 
 
-# ─────────────────────────────────────────────────────────────
-# 6. TECH JOBS FOR GOOD
-# ─────────────────────────────────────────────────────────────
+def scrape_impactopportunity():
+    """Mission-driven nonprofit jobs — search LinkedIn with nonprofit filter"""
+    jobs = []
+    # LinkedIn search for nonprofit/mission-driven orgs
+    nonprofit_searches = [
+        ("program+manager", "Boston%2C+Massachusetts", "nonprofit"),
+        ("operations+manager", "Boston%2C+Massachusetts", "nonprofit"),
+        ("program+coordinator", "Boston%2C+Massachusetts", "nonprofit"),
+    ]
+    for kw, loc, _ in nonprofit_searches:
+        try:
+            resp = requests.get(
+                f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+                f"?keywords={kw}&location={loc}&f_I=1&f_TPR=r86400&start=0",
+                # f_I=1 is Nonprofit industry filter on LinkedIn
+                headers=HEADERS, timeout=15)
+            soup = BeautifulSoup(resp.text, "lxml")
+            for card in soup.find_all("li")[:10]:
+                t = card.find("h3"); c = card.find("h4"); a = card.find("a")
+                if t and a:
+                    href = a.get("href", "").split("?")[0]
+                    jobs.append(norm(t.get_text(strip=True),
+                                     c.get_text(strip=True) if c else "",
+                                     "Boston, MA", "", href, "LinkedIn (Nonprofit)"))
+        except Exception as e:
+            print(f"    ⚠️  Nonprofit search: {e}")
+        time.sleep(3)
+    return jobs
+
+
 def scrape_techjobsforgood():
+    """Tech for good / social impact jobs via LinkedIn"""
     jobs = []
     try:
-        for term in ["program-manager", "project-manager", "operations"]:
-            url  = f"https://techjobsforgood.com/jobs/?q={term}"
-            resp = requests.get(url, headers=HEADERS, timeout=15)
-            soup = BeautifulSoup(resp.text, "lxml")
-            for card in soup.select(".job, .job-post, .job-listing, article"):
-                t = card.select_one("h2, h3, .title")
-                a = card.select_one("a[href]")
-                c = card.select_one(".company, .org")
-                if t and a:
-                    href = a.get("href","")
-                    if not href.startswith("http"):
-                        href = "https://techjobsforgood.com" + href
-                    jobs.append(norm(t.get_text(strip=True), c.get_text(strip=True) if c else "",
-                                     "Various", "", href, "TechJobsForGood"))
-            time.sleep(2)
+        resp = requests.get(
+            "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+            "?keywords=program+manager&location=Boston%2C+Massachusetts&f_I=94&f_TPR=r86400",
+            # f_I=94 is E-Learning / Education industry
+            headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(resp.text, "lxml")
+        for card in soup.find_all("li")[:10]:
+            t = card.find("h3"); c = card.find("h4"); a = card.find("a")
+            if t and a:
+                href = a.get("href", "").split("?")[0]
+                jobs.append(norm(t.get_text(strip=True),
+                                 c.get_text(strip=True) if c else "",
+                                 "Boston, MA", "", href, "LinkedIn (Education)"))
     except Exception as e:
         print(f"    ⚠️  TechJobsForGood: {e}")
     return jobs
 
 
-# ─────────────────────────────────────────────────────────────
-# 7. 80000 HOURS (high-impact org jobs, many cap-exempt)
-# ─────────────────────────────────────────────────────────────
-def scrape_80000hours():
+def scrape_80khours():
+    """High-impact careers — research/policy orgs, usually cap-exempt"""
     jobs = []
     try:
-        url  = "https://jobs.80000hours.org/?refinementList%5Btags_area%5D%5B0%5D=Operations&refinementList%5Btags_area%5D%5B1%5D=Project+management"
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(resp.text, "lxml")
-        for card in soup.select(".job, .chakra-stack, article, [class*='job']"):
-            t = card.select_one("h2, h3, h4, [class*='title']")
-            a = card.select_one("a[href]")
-            c = card.select_one("[class*='company'], [class*='org']")
-            if t and a and len(t.get_text(strip=True)) > 3:
-                href = a.get("href","")
-                if not href.startswith("http"):
-                    href = "https://jobs.80000hours.org" + href
-                jobs.append(norm(t.get_text(strip=True), c.get_text(strip=True) if c else "",
-                                 "Remote / Various", "", href, "80000hours"))
+        # 80k Hours posts their own job board as JSON
+        resp = requests.get(
+            "https://jobs.80000hours.org/api/jobs?search=program+manager&location=Boston",
+            headers=HEADERS, timeout=12)
+        if resp.status_code == 200:
+            try:
+                for j in resp.json().get("jobs", [])[:15]:
+                    title = j.get("title", "")
+                    org   = j.get("organization", {}).get("name", "")
+                    url   = j.get("url", "")
+                    loc   = j.get("location", "Remote")
+                    desc  = j.get("description", "")[:300]
+                    jobs.append(norm(title, org, loc, desc, url, "80,000 Hours"))
+            except Exception:
+                pass
     except Exception as e:
-        print(f"    ⚠️  80000hours: {e}")
+        print(f"    ⚠️  80k Hours: {e}")
     return jobs
 
 
-# ─────────────────────────────────────────────────────────────
-# 8. HIGHEREDJOBS (general search — org_scraper also has targeted version)
-# ─────────────────────────────────────────────────────────────
 def scrape_higheredjobs_general():
+    """HigherEdJobs — filter to admin/operations/coordinator roles only."""
     jobs = []
-    urls = [
-        "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=program+manager",
-        "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=operations+manager",
-        "https://www.higheredjobs.com/rss/articleFeed.cfm?feedType=2&JobCatNos=7&Keyword=project+coordinator",
+    # Targeted keyword searches — not broad category feeds
+    search_terms = [
+        "program+manager",
+        "project+manager",
+        "operations+manager",
+        "program+coordinator",
+        "project+coordinator",
+        "operations+coordinator",
+        "grants+manager",
+        "research+program+manager",
     ]
-    for url in urls:
-        entries = rss(url, "HigherEdJobs")
+    for term in search_terms:
+        entries = rss(
+            f"https://www.higheredjobs.com/rss/articleRSS.cfm?PosType=1&InstType=1"
+            f"&JobCat=101&Keyword={term}&Region=7",   # Region 7 = New England
+            "HigherEdJobs"
+        )
         for e in entries:
-            title = e.get("title","")
-            company = e.get("author","")
-            if " - " in title:
-                parts = title.rsplit(" - ", 1)
-                title, company = parts[0].strip(), parts[1].strip()
-            jobs.append(norm(title, company or "Higher Ed Institution", "Massachusetts",
-                             e.get("summary",""), e.get("link",""), "HigherEdJobs", e.get("published","")))
-        time.sleep(1.5)
+            jobs.append(norm(
+                e.get("title",""),
+                e.get("author",""),
+                "New England",
+                e.get("summary",""),
+                e.get("link",""),
+                "HigherEdJobs",
+                e.get("published","")
+            ))
+        time.sleep(1)
     return jobs
 
 
-# ─────────────────────────────────────────────────────────────
-# 9. KFORCE (staffing — excellent for contract roles)
-# ─────────────────────────────────────────────────────────────
-def scrape_kforce():
+def scrape_linkedin_contracts():
+    """
+    Dedicated LinkedIn search for CONTRACT roles — searches specifically
+    for contract job type (f_JT=C). This catches staffing agency listings
+    that the broken HTML scrapers miss.
+    """
     jobs = []
-    for term in ["program+manager", "project+manager", "operations+manager", "project+coordinator"]:
+    contract_searches = [
+        ("program+manager",      "Boston%2C+Massachusetts"),
+        ("project+manager",      "Boston%2C+Massachusetts"),
+        ("operations+manager",   "Boston%2C+Massachusetts"),
+        ("program+coordinator",  "Boston%2C+Massachusetts"),
+        ("operations+analyst",   "Boston%2C+Massachusetts"),
+        ("program+manager",      "United+States"),   # Remote contracts
+        ("project+manager",      "United+States"),
+    ]
+    for kw, loc in contract_searches:
         try:
-            url  = f"https://www.kforce.com/job-search/?skill={term}&location=Boston%2C+MA&radius=25"
-            resp = requests.get(url, headers=HEADERS, timeout=15)
+            # f_JT=C = Contract job type filter
+            resp = requests.get(
+                f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+                f"?keywords={kw}&location={loc}&f_JT=C&f_TPR=r86400&start=0",
+                headers=HEADERS, timeout=15)
             soup = BeautifulSoup(resp.text, "lxml")
-            for card in soup.select(".job-card, .search-result, article.job"):
-                t = card.select_one("h2, h3, .job-title")
-                a = card.select_one("a[href]")
-                l = card.select_one(".location")
-                d = card.select_one(".description, .summary")
+            for card in soup.find_all("li")[:15]:
+                t = card.find("h3")
+                c = card.find("h4")
+                a = card.find("a")
                 if t and a:
-                    href = a.get("href","")
-                    if not href.startswith("http"):
-                        href = "https://www.kforce.com" + href
-                    jobs.append(norm(t.get_text(strip=True), "Kforce (Staffing)",
-                                     l.get_text(strip=True) if l else "Boston, MA",
-                                     d.get_text(strip=True) if d else "", href, "Kforce"))
+                    href = a.get("href","").split("?")[0]
+                    jobs.append(norm(
+                        t.get_text(strip=True),
+                        c.get_text(strip=True) if c else "",
+                        loc.replace("+"," ").replace("%2C",","),
+                        "", href, "LinkedIn (Contract)"))
         except Exception as e:
-            print(f"    ⚠️  Kforce: {e}")
-        time.sleep(2)
+            print(f"    ⚠️  LinkedIn Contracts: {e}")
+        time.sleep(3)
     return jobs
 
 
-# ─────────────────────────────────────────────────────────────
-# 10. ROBERT HALF (staffing — contracts + perm)
-# ─────────────────────────────────────────────────────────────
+def scrape_kforce():
+    """Kforce — uses LinkedIn feed since their site is JS-rendered"""
+    jobs = []
+    try:
+        resp = requests.get(
+            "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+            "?keywords=program+manager&location=Boston%2C+Massachusetts"
+            "&f_C=1815&f_TPR=r86400&start=0",   # f_C=1815 = Kforce company filter
+            headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(resp.text, "lxml")
+        for card in soup.find_all("li")[:10]:
+            t = card.find("h3"); a = card.find("a")
+            if t and a:
+                href = a.get("href","").split("?")[0]
+                jobs.append(norm(t.get_text(strip=True), "Kforce", "Boston, MA",
+                                 "", href, "Kforce"))
+    except Exception as e:
+        print(f"    ⚠️  Kforce: {e}")
+    return jobs
+
+
 def scrape_roberthalf():
+    """Robert Half — JSON API (more reliable than scraping HTML)"""
     jobs = []
     for term in ["program manager", "project manager", "operations manager", "project coordinator"]:
         try:
-            url  = f"https://www.roberthalf.com/us/en/jobs/all-jobs?keywords={term.replace(' ','+')}&location=Boston+MA"
-            resp = requests.get(url, headers=HEADERS, timeout=15)
-            soup = BeautifulSoup(resp.text, "lxml")
-            for card in soup.select("[class*='job-card'], [class*='search-result']"):
-                t = card.select_one("h2, h3, [class*='title']")
-                a = card.select_one("a[href]")
-                l = card.select_one("[class*='location']")
-                d = card.select_one("[class*='description'], [class*='summary']")
-                if t and a:
-                    href = a.get("href","")
-                    if not href.startswith("http"):
-                        href = "https://www.roberthalf.com" + href
-                    jobs.append(norm(t.get_text(strip=True), "Robert Half (Staffing)",
-                                     l.get_text(strip=True) if l else "Boston, MA",
-                                     d.get_text(strip=True) if d else "", href, "Robert Half"))
+            url = (f"https://www.roberthalf.com/us/en/jobs/api/jobs"
+                   f"?keyword={term.replace(' ', '+')}&location=Boston%2C+MA"
+                   f"&distance=25&pageNumber=1&pageSize=10")
+            resp = requests.get(url, headers={**HEADERS, "Accept": "application/json"}, timeout=15)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    listings = data.get("results", data.get("jobs", []))
+                    for j in listings[:10]:
+                        title = j.get("title", j.get("jobTitle", ""))
+                        company = "Robert Half"
+                        location = j.get("city", "Boston") + ", " + j.get("state", "MA")
+                        link = j.get("canonicalUrl", j.get("url", ""))
+                        if not link.startswith("http"):
+                            link = "https://www.roberthalf.com" + link
+                        description = j.get("description", j.get("summary", ""))[:500]
+                        jobs.append(norm(title, company, location, description, link, "Robert Half"))
+                except Exception:
+                    pass
         except Exception as e:
             print(f"    ⚠️  Robert Half: {e}")
         time.sleep(2)
     return jobs
 
 
-# ─────────────────────────────────────────────────────────────
-# 11. JOHNLEONARD (Boston staffing — contracts + direct hire)
-# ─────────────────────────────────────────────────────────────
 def scrape_johnleonard():
+    """JOHNLEONARD — Boston staffing firm, HTML scraper"""
     jobs = []
     for term in ["program+manager", "project+manager", "operations", "coordinator"]:
         try:
             url  = f"https://www.johnleonard.com/find-a-job/?s={term}"
             resp = requests.get(url, headers=HEADERS, timeout=15)
             soup = BeautifulSoup(resp.text, "lxml")
-            for card in soup.select(".job-listing, .job, article"):
-                t = card.select_one("h2, h3, .title")
+            for card in soup.select(".job-listing, .job, article, .views-row"):
+                t = card.select_one("h2, h3, .title, a")
                 a = card.select_one("a[href]")
                 l = card.select_one(".location, .city")
                 d = card.select_one("p, .description")
@@ -323,18 +408,16 @@ def scrape_johnleonard():
     return jobs
 
 
-# ─────────────────────────────────────────────────────────────
-# 12. BEACON HILL STAFFING (Boston — strong in admin/ops)
-# ─────────────────────────────────────────────────────────────
 def scrape_beaconhill():
+    """Beacon Hill — Boston staffing, HTML scraper"""
     jobs = []
     for term in ["program+manager", "project+manager", "operations", "coordinator"]:
         try:
             url  = f"https://www.beaconhillstaffing.com/jobs?search={term}&location=Boston"
             resp = requests.get(url, headers=HEADERS, timeout=15)
             soup = BeautifulSoup(resp.text, "lxml")
-            for card in soup.select(".job, .job-card, article, .position"):
-                t = card.select_one("h2, h3, .title, .job-title")
+            for card in soup.select(".job, .job-card, article, .position, .views-row"):
+                t = card.select_one("h2, h3, .title, .job-title, a")
                 a = card.select_one("a[href]")
                 l = card.select_one(".location, .city, .place")
                 d = card.select_one("p, .desc, .summary")
@@ -351,6 +434,7 @@ def scrape_beaconhill():
     return jobs
 
 
+
 # ─────────────────────────────────────────────────────────────
 # MASTER GENERAL SCRAPER
 # ─────────────────────────────────────────────────────────────
@@ -362,11 +446,12 @@ def scrape_all_sources() -> list:
     scrapers = [
         ("Indeed",              scrape_indeed),
         ("LinkedIn",            scrape_linkedin),
+        ("LinkedIn (Contract)", scrape_linkedin_contracts),
         ("Built In Boston",     scrape_builtin),
         ("Idealist",            scrape_idealist),
         ("ImpactOpportunity",   scrape_impactopportunity),
         ("TechJobsForGood",     scrape_techjobsforgood),
-        ("80000hours",          scrape_80000hours),
+        ("80000hours",          scrape_80khours),
         ("HigherEdJobs",        scrape_higheredjobs_general),
         ("Kforce",              scrape_kforce),
         ("Robert Half",         scrape_roberthalf),
