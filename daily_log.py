@@ -92,11 +92,12 @@ def _get_today_tab() -> "gspread.Worksheet | None":
     return ws
 
 
-def log_scraped_job(job: dict, score_result: dict | None = None):
+def log_scraped_job(job: dict, score_result: dict | None = None, status: str | None = None):
     """
     Log one job to today's tab.
     Call this for EVERY relevant job — scored or not.
-    If score_result is None, the job appears as 'Pending score' or 'Quota exceeded'.
+    If score_result is None, status controls the label shown in the sheet.
+    This keeps below-threshold, deferred, and quota-exhausted jobs from all being mislabeled.
     """
     ws = _get_today_tab()
     if not ws:
@@ -121,7 +122,7 @@ def log_scraped_job(job: dict, score_result: dict | None = None):
         match_pct    = score_result.get("match_score", "")
         summary      = score_result.get("summary", "")
     else:
-        score_status = "⏸️ Quota exceeded — not scored"
+        score_status = status or "Pending / not scored"
         match_pct    = ""
         summary      = ""
 
@@ -146,7 +147,7 @@ def log_scraped_job(job: dict, score_result: dict | None = None):
         print(f"  ⚠️  [DailyLog] Row error: {e}")
 
 
-def batch_log_unscored(jobs: list[dict]):
+def batch_log_unscored(jobs: list[dict], status: str = "⏸️ Quota exceeded — not scored"):
     """
     Batch-log a list of unscored jobs efficiently (one API call).
     Used when quota is exhausted mid-run.
@@ -174,7 +175,7 @@ def batch_log_unscored(jobs: list[dict]):
             job.get("source", ""),
             emp_type,
             "✅ Yes" if job.get("cap_exempt") else "No",
-            "⏸️ Quota exceeded — not scored",
+            status,
             "",   # match %
             "",   # summary
             job.get("url", ""),
@@ -183,7 +184,7 @@ def batch_log_unscored(jobs: list[dict]):
 
     try:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
-        print(f"  📊 [DailyLog] Logged {len(rows)} unscored jobs to today's tab")
+        print(f"  📊 [DailyLog] Logged {len(rows)} jobs to today's tab as: {status}")
     except Exception as e:
         print(f"  ⚠️  [DailyLog] Batch log error: {e}")
 
