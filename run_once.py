@@ -29,8 +29,8 @@ from daily_log import log_scraped_job, batch_log_unscored, send_unscored_digest
 # SETTINGS
 # ─────────────────────────────────────────────────────────────
 
-MAX_SCORE_PER_RUN = 90    # Gemini free tier: 1500/day, 8 runs/day = safe
-MAX_AGE_DAYS      = 1     # Widened for first scrape — change back to 1 after first run
+MAX_SCORE_PER_RUN = 80    # Gemini free tier: 1500/day, 8 runs/day = safe
+MAX_AGE_DAYS      = 1      # Only score jobs posted in the last 24 hours
 DIGEST_TOP_N      = 20    # Top N matches to include in the digest email
 
 # ─────────────────────────────────────────────────────────────
@@ -81,159 +81,59 @@ def title_is_relevant(title: str) -> bool:
 
 
 def is_recent_posting(job: dict, max_age_days: int = MAX_AGE_DAYS) -> bool:
-    """True if posted within max_age_days. Fails open if date unparseable."""
+    """
+    True if posted within max_age_days.
+    Org jobs (cap_exempt=True): strict — excludes if date missing or unparseable.
+    General board jobs: lenient — pre-filtered to 24h at the source.
+    """
     if max_age_days <= 0:
         return True
-    posted = (job.get("posted_date") or "").strip()
+
+    is_org = bool(job.get("cap_exempt"))
+    posted  = (job.get("posted_date") or "").strip()
+
+    # Empty date
     if not posted:
+        return False if is_org else True
+
+    p = posted.lower()
+
+    # "Just now" / "today" / "X hours ago" / "X minutes ago"
+    if any(x in p for x in ["just now", "just posted", "today", "hours ago", "minutes ago", "new"]):
         return True
 
-    p_lower = posted.lower()
-    if any(p in p_lower for p in ["today", "hours ago", "just posted", "minutes ago", "new"]):
-        return True
-    if "yesterday" in p_lower or "1 day ago" in p_lower:
+    # "yesterday" / "1 day ago"
+    if "yesterday" in p or "1 day ago" in p:
         return max_age_days >= 1
 
-    m = re.search(r"(\d+)\s*days?\s*ago", p_lower)
+    # "N days ago" — explicit number e.g. "2 days ago"
+    m = re.search(r"(\d+)\s*days?\s*ago", p)
     if m:
         return int(m.group(1)) <= max_age_days
-    if re.search(r"\d+\s*weeks?\s*ago", p_lower):
-        return False
-    if re.search(r"\d+\s*months?\s*ago", p_lower):
+
+    # "30+" or "30+ days" — Workday's way of saying ≥30 days old
+    m = re.search(r"(\d+)\+", p)
+    if m:
+        return False   # Always older than any sensible window
+
+    # "N weeks ago" / "N months ago"
+    if re.search(r"\d+\s*weeks?\s*ago", p) or re.search(r"\d+\s*months?\s*ago", p):
         return False
 
-    formats = [
-        "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ",
-        "%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S", "%d %b %Y",
-    ]
-    for fmt in formats:
+    # Absolute date parsing
+    for fmt in ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S+00:00",
+                "%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S", "%d %b %Y"]:
         try:
-            posted_dt = datetime.strptime(posted[:30].strip(), fmt)
-            return (datetime.now() - posted_dt).days <= max_age_days
+            return (datetime.now() - datetime.strptime(posted[:30].strip(), fmt)).days <= max_age_days
         except (ValueError, TypeError):
             continue
+
+    # Try YYYY-MM-DD from first 10 chars
     try:
-        posted_dt = datetime.strptime(posted[:10], "%Y-%m-%d")
-        return (datetime.now() - posted_dt).days <= max_age_days
+        return (datetime.now() - datetime.strptime(posted[:10], "%Y-%m-%d")).days <= max_age_days
     except (ValueError, TypeError):
         pass
-    return True
 
-
-def run():
-    start = datetime.now()
-    print("\n" + "="*60)
-    print(f"Cycle: {start.strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*60)
-
-    init_db()
-    print(f"DB: {get_seen_count()} jobs seen so far\n")
-
-    # ── Scrape ──────────────────────────────────────────────────
-    general_jobs = scrape_all_sources()
-    org_jobs     = scrape_all_orgs()
-    all_jobs     = org_jobs + general_jobs
-
-    new_jobs = [j for j in all_jobs if not is_seen(j["id"])]
-    print(f"\nScraped: {len(all_jobs)} total | {len(new_jobs)} new\n")
-
-    if not new_jobs:
-        print("Nothing new this cycle.")
-        return
-
-    # ── Title pre-filter ────────────────────────────────────────
-    relevant   = [j for j in new_jobs if title_is_relevant(j.get("title", ""))]
-    irrelevant = [j for j in new_jobs if not title_is_relevant(j.get("title", ""))]
-
-    for job in irrelevant:
-        mark_seen(job["id"], job.get("title",""), job.get("company",""), job.get("url",""))
-
-    print(f"Title filter: {len(relevant)} relevant | {len(irrelevant)} irrelevant (skipped)")
-
-    # ── Freshness filter (24 hours) ─────────────────────────────
-    fresh = [j for j in relevant if is_recent_posting(j)]
-    stale = [j for j in relevant if not is_recent_posting(j)]
-
-    for job in stale:
-        mark_seen(job["id"], job.get("title",""), job.get("company",""), job.get("url",""))
-
-    print(f"Freshness filter (<=24h): {len(fresh)} fresh | {len(stale)} stale (skipped)\n")
-
-    if not fresh:
-        print("No fresh relevant jobs this cycle.")
-        return
-
-    # ── Mark ALL as seen BEFORE scoring ─────────────────────────
-    for job in fresh:
-        mark_seen(job["id"], job.get("title",""), job.get("company",""), job.get("url",""))
-
-    # ── Score ───────────────────────────────────────────────────
-    to_score = fresh[:MAX_SCORE_PER_RUN]
-    deferred = fresh[MAX_SCORE_PER_RUN:]
-
-    if deferred:
-        print(f"Note: {len(deferred)} fresh jobs deferred to next cycle (cap={MAX_SCORE_PER_RUN})\n")
-
-    matches      = []
-    scored_count = 0
-    quota_hit_at = None
-
-    print(f"Scoring {len(to_score)} jobs...\n")
-
-    for i, job in enumerate(to_score, 1):
-        icon = "🏛️" if job.get("cap_exempt") else "📋"
-        print(f"  [{i}/{len(to_score)}] {icon} {job.get('title')} @ {job.get('company')}")
-
-        result = evaluate_job(job)
-
-        import scorer
-        if scorer.DAILY_QUOTA_EXHAUSTED:
-            quota_hit_at = i
-            log_scraped_job(job, score_result=None)
-            print(f"\n  Quota exhausted at job {i}. Stopping.")
-            break
-
-        log_scraped_job(job, score_result=result)
-
-        if result:
-            scored_count += 1
-            matches.append(result)
-            log_to_sheets(result)
-
-        time.sleep(5)
-
-    # ── Quota exhaustion handling ───────────────────────────────
-    if quota_hit_at is not None:
-        not_attempted = to_score[quota_hit_at:] + deferred
-        print(f"\n  Logging {len(not_attempted)} unscored jobs to Daily Scrape Log...")
-        batch_log_unscored(not_attempted)
-        send_unscored_digest(not_attempted, scored_count=scored_count)
-    elif deferred:
-        print(f"\n  Logging {len(deferred)} deferred jobs to Daily Scrape Log...")
-        batch_log_unscored(deferred)
-
-    # ── Send digest of THIS run's top matches ───────────────────
-    if matches:
-        top = sorted(matches, key=lambda x: x["match_score"], reverse=True)[:DIGEST_TOP_N]
-        print(f"\n  Sending digest: top {len(top)} of {len(matches)} matches from this run...")
-        send_digest_email(top)
-    else:
-        print("\n  No matches this run — no digest sent.")
-
-    # ── Summary ─────────────────────────────────────────────────
-    elapsed   = (datetime.now() - start).seconds
-    contracts = [m for m in matches if m.get("is_short_contract")]
-    fulltime  = [m for m in matches if not m.get("is_short_contract")]
-
-    print("\n" + "-"*60)
-    print(f"Done in {elapsed}s | Scored: {scored_count} | Matches >={MATCH_THRESHOLD}%: {len(matches)}")
-    print(f"  ({len(contracts)} contract, {len(fulltime)} full-time cap-exempt)")
-    if matches:
-        for m in sorted(matches, key=lambda x: x["match_score"], reverse=True)[:8]:
-            icon = "📋" if m.get("is_short_contract") else ("✅" if m.get("is_verified_h1b") else "⭐")
-            print(f"  {m['match_score']}% {icon} {m['title']} @ {m['company']}")
-    print("-"*60 + "\n")
-
-
-if __name__ == "__main__":
-    run()
+    # Unparseable date — be strict for org jobs, lenient for general boards
+    return False if is_org else True
