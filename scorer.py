@@ -119,12 +119,12 @@ def passes_local_filter(job: dict) -> tuple[bool, str, str, bool, bool]:
     # 4. Detect employment type
     emp_type = detect_employment_type(job)
 
-    # 5. Short contract (≤ 6 months) → ACCEPT regardless of H-1B
+    # 5. Short contract (≤ 6 months) → ACCEPT regardless of employer
     if emp_type == "short_contract":
         cap_exempt, verified = check_cap_exempt(job)
         return True, "", emp_type, cap_exempt, verified
 
-    # 6. Full-time / long contract / unknown → require cap-exempt employer
+    # 6. Full-time / long contract / unknown → must be cap-exempt employer
     cap_exempt, verified = check_cap_exempt(job)
     if cap_exempt:
         return True, "", emp_type, cap_exempt, verified
