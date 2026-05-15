@@ -387,3 +387,21 @@ def evaluate_job(job: dict) -> dict | None:
         "summary":              scoring.get("summary", ""),
         "evaluated_at":         __import__('datetime').datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
+def _try_fetch_description(url: str) -> str:
+    """Best-effort fetch of full job description. Returns clean text or empty string."""
+    if not url or not url.startswith("http"):
+        return ""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+        resp = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }, timeout=8)
+        if resp.status_code != 200:
+            return ""
+        soup = BeautifulSoup(resp.text, "lxml")
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()
+        return soup.get_text(separator=" ", strip=True)[:4000]
+    except Exception:
+        return ""
