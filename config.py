@@ -110,7 +110,7 @@ CAP_EXEMPT_EMPLOYER_KEYWORDS = [
     # Teaching hospitals & health systems
     "massachusetts general hospital", "mass general", "mgh",
     "brigham and women", "brigham & women",
-    "beth israel deaconess", "bidmc",
+    "beth israel deaconess", "bidmc", "beth israel lahey", "bilh",
     "dana-farber cancer institute", "dana farber", "dana-farber",
     "boston children's hospital", "boston childrens",
     "boston medical center", "bmc",
@@ -157,7 +157,7 @@ VERIFIED_H1B_SPONSORS = [
     "massachusetts institute of technology", "boston university",
     "tufts university", "boston college", "umass",
     "massachusetts general hospital", "mass general", "mgh",
-    "brigham and women", "beth israel deaconess",
+    "brigham and women", "beth israel deaconess", "beth israel lahey health", "bilh",
     "dana-farber", "boston children's hospital", "boston medical center",
     "broad institute", "mitre", "draper laboratory", "lincoln laboratory",
     "abt associates", "icf", "education development center",
