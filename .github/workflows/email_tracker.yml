@@ -1,0 +1,49 @@
+# =============================================================================
+# .github/workflows/email_tracker.yml
+#
+# Scans Gmail every 6 hours for job application emails.
+# Updates the Job Application Tracker Google Sheet automatically.
+# Uses the same secrets as the job bot — only TRACKER_SHEET_ID is new.
+# =============================================================================
+
+name: Job Application Tracker
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # Every 6 hours
+  workflow_dispatch:          # Manual trigger
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  track_applications:
+    name: Scan Gmail & Update Tracker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create .env from secrets
+        run: |
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+          echo "NOTIFY_EMAIL=${{ secrets.NOTIFY_EMAIL }}" >> .env
+          echo "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" >> .env
+          echo "TRACKER_SHEET_ID=${{ secrets.TRACKER_SHEET_ID }}" >> .env
+
+      - name: Create google_creds.json
+        run: echo '${{ secrets.GOOGLE_CREDS_JSON }}' > google_creds.json
+
+      - name: Run email tracker
+        run: python email_tracker.py
