@@ -31,14 +31,15 @@ GMAIL_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
 CREDS_FILE     = os.path.join(os.path.dirname(__file__), "google_creds.json")
 
 SHEET_HEADERS = [
-    "Timestamp", "Title", "Company", "Location", "Source",
-    "Employment Type", "H-1B Status", "Cap-Exempt?", "Verified H-1B Sponsor?",
-    "Verify H-1B Link",
-    "Match %", "Raw Score", "Cap Bonus",
-    "Role Fit /30", "Skill Match /35", "Exp Fit /20", "Env Fit /15",
-    "Matching Skills", "Missing Skills",
+    "Timestamp", "Tier", "Title", "Company", "Location", "Source",
+    "Format", "Duration", "Green Flags", "Location Note",
+    "Match %", "Raw Score", "Green Bonus", "Unconfirmed Penalty",
+    "Role Fit /35", "Evidence Match /35", "Level Fit /15", "Logistics Fit /15",
+    "Clusters Matched", "Evidence Cited", "Missing Skills",
+    "Gap Severity", "Overqualification Risk",
     "Suggested Resume", "Tailoring Notes",
     "AI Summary",
+    "H-1B Status", "Verify H-1B Link",
     "Apply Link", "Posted Date",
 ]
 
@@ -58,9 +59,9 @@ def _get_sheet():
     try:
         ws = sh.worksheet("Job Matches")
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Job Matches", rows=2000, cols=28)
+        ws = sh.add_worksheet(title="Job Matches", rows=2000, cols=32)
         ws.append_row(SHEET_HEADERS)
-        ws.format("A1:X1", {"textFormat": {"bold": True}, "backgroundColor": {"red":0.12,"green":0.23,"blue":0.37}})
+        ws.format("A1:AD1", {"textFormat": {"bold": True}, "backgroundColor": {"red":0.12,"green":0.23,"blue":0.37}})
         ws.freeze(rows=1)
     _sheet_cache = ws
     return ws
@@ -75,27 +76,33 @@ def log_to_sheets(r: dict):
     # Color-code the employment type cell
     row = [
         r.get("evaluated_at",""),
+        r.get("tier_label",""),
         r.get("title",""),
         r.get("company",""),
         r.get("location",""),
         r.get("source",""),
-        r.get("employment_type",""),           # Employment Type
-        r.get("h1b_status",""),                # H-1B Status
-        "✅ Yes" if r.get("is_cap_exempt") else "No",
-        "✅ Verified" if r.get("is_verified_h1b") else ("⭐ Likely" if r.get("is_cap_exempt") else "No"),
-        r.get("h1b_verify_url",""),            # Verify link
+        r.get("employment_type",""),
+        r.get("duration_confidence",""),
+        r.get("green_flags",""),
+        r.get("location_note",""),
         r.get("match_score",""),
         r.get("raw_score",""),
-        r.get("cap_exempt_bonus", 0),
+        r.get("green_flag_bonus", 0),
+        r.get("unconfirmed_penalty", 0),
         r.get("role_fit",""),
-        r.get("skill_match",""),
-        r.get("experience_fit",""),
-        r.get("environment_fit",""),
-        r.get("top_matching_skills",""),
+        r.get("evidence_match",""),
+        r.get("level_fit",""),
+        r.get("logistics_fit",""),
+        r.get("clusters_matched",""),
+        r.get("evidence_cited",""),
         r.get("missing_skills",""),
+        r.get("gap_severity",""),
+        r.get("overqualification_risk",""),
         r.get("resume_version",""),
         r.get("resume_tailoring",""),
         r.get("summary",""),
+        r.get("h1b_status",""),
+        r.get("h1b_verify_url",""),
         r.get("url",""),
         r.get("posted_date",""),
     ]
