@@ -443,15 +443,15 @@ def scrape_all_sources() -> list:
     print("\n📡 Scraping general job boards...")
     all_jobs = []
 
+    # Built In Boston, TechJobsForGood and 80000hours were dropped in the
+    # contract pivot: tech-heavy, and near-zero yield on term-limited
+    # coordination work. Re-add them if that assumption turns out wrong.
     scrapers = [
         ("Indeed",              scrape_indeed),
         ("LinkedIn",            scrape_linkedin),
         ("LinkedIn (Contract)", scrape_linkedin_contracts),
-        ("Built In Boston",     scrape_builtin),
         ("Idealist",            scrape_idealist),
         ("ImpactOpportunity",   scrape_impactopportunity),
-        ("TechJobsForGood",     scrape_techjobsforgood),
-        ("80000hours",          scrape_80khours),
         ("HigherEdJobs",        scrape_higheredjobs_general),
         ("Kforce",              scrape_kforce),
         ("Robert Half",         scrape_roberthalf),
