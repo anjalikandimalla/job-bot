@@ -109,6 +109,66 @@ ORGS = [
      "tenant": "bmc",
      "url": "https://careers-bmc.icims.com/jobs/search?ss=1&searchKeyword=program+manager",
      "type": "hospital", "remote_ok": False},
+
+    # ════════════════════════════════════════════════════════════════
+    # ADDED IN THE CONTRACT PIVOT
+    # Northeastern was missing entirely despite being the top target.
+    # Universities post term appointments and grant-funded roles publicly.
+    # Their temp pools do NOT appear here: Harvard routes contingent hiring
+    # through Yoh and MIT through nextSource, both registration rather than
+    # scraping. See sources_contract.scrape_yoh() for the Harvard-adjacent lane.
+    #
+    # Tenant/datacenter/career_site values below are best-guess defaults.
+    # org_scraper.scrape_workday_org() already retries across wd1/wd5/wd3/wd2
+    # and the standard site-name variants, then caches whichever combo works,
+    # so a wrong guess self-corrects on first successful run. Any org that
+    # stays at 0 listings for several days needs its real URL pulled from the
+    # careers page Network tab.
+    # ════════════════════════════════════════════════════════════════
+
+    {"name": "Northeastern University",
+     "ats": "workday", "tenant": "northeastern", "datacenter": "wd1",
+     "career_site": "careers", "type": "university", "remote_ok": True},
+
+    {"name": "University of Massachusetts",
+     "ats": "workday", "tenant": "umass", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": True},
+
+    {"name": "Emerson College",
+     "ats": "workday", "tenant": "emerson", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": False},
+
+    {"name": "Simmons University",
+     "ats": "workday", "tenant": "simmons", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": False},
+
+    {"name": "Suffolk University",
+     "ats": "workday", "tenant": "suffolk", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": False},
+
+    {"name": "Bentley University",
+     "ats": "workday", "tenant": "bentley", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": False},
+
+    {"name": "Lesley University",
+     "ats": "workday", "tenant": "lesley", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": False},
+
+    {"name": "Wellesley College",
+     "ats": "workday", "tenant": "wellesley", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": False},
+
+    {"name": "Berklee College of Music",
+     "ats": "workday", "tenant": "berklee", "datacenter": "wd1",
+     "career_site": "External", "type": "university", "remote_ok": False},
+
+    {"name": "Tufts Medicine",
+     "ats": "workday", "tenant": "tuftsmedicine", "datacenter": "wd1",
+     "career_site": "External", "type": "hospital", "remote_ok": False},
+
+    {"name": "Cambridge Health Alliance",
+     "ats": "workday", "tenant": "challiance", "datacenter": "wd1",
+     "career_site": "External", "type": "hospital", "remote_ok": False},
 ]
 
 
