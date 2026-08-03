@@ -1,12 +1,15 @@
 # =============================================================================
-# scorer.py — Filter + Gemini scorer
+# scorer.py — Eligibility gates + tiering + Gemini scoring
 #
-# ACCEPTANCE RULES:
-#   CONTRACT ≤ 6 months  → ACCEPT (CPT-eligible, no H-1B needed)
-#   FULL-TIME at cap-exempt H-1B org → ACCEPT
-#   Everything else      → REJECT
+# ACCEPTANCE:
+#   Contract / temp / term-limited, 1-12 months, duration confirmed   → ACCEPT
+#   Contract signal present, duration not stated                      → ACCEPT (flagged)
+#   Internship (paid)                                                 → ACCEPT
+#   Full-time at a cap-exempt employer                                → ACCEPT (Tier 4)
+#   Everything else                                                   → REJECT
 #
-# Hard dealbreakers (clearance, unpaid, etc.) reject ALL types.
+# RANKING: strict tier sort, then fit score inside the tier.
+#   Tier 1 higher ed > Tier 2 life sciences > Tier 3 other > Tier 4 full-time
 # =============================================================================
 
 import re
@@ -17,295 +20,419 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from config import (
-    DEALBREAKER_KEYWORDS,
-    REJECT_SENIORITY_KEYWORDS,
-    SHORT_CONTRACT_PATTERNS,
-    LONG_CONTRACT_PATTERNS,
-    GENERIC_CONTRACT_KEYWORDS,
-    FULLTIME_KEYWORDS,
+    DEALBREAKER_KEYWORDS, UNDERGRAD_ONLY_KEYWORDS, REJECT_SENIORITY_KEYWORDS,
+    IN_RANGE_DURATION_PATTERNS, OUT_OF_RANGE_DURATION_PATTERNS,
+    CONTRACT_SIGNAL_KEYWORDS, INTERNSHIP_KEYWORDS, FULLTIME_KEYWORDS,
+    GREEN_FLAG_KEYWORDS, ANTI_PATTERNS,
+    TIER1_HIGHER_ED_KEYWORDS, TIER2_LIFE_SCIENCES_KEYWORDS, TIER3_OTHER_KEYWORDS,
+    TIER_LABELS, CAP_EXEMPT_EMPLOYER_KEYWORDS, VERIFIED_H1B_SPONSORS,
+    CAPABILITY_CLUSTERS, DIFFERENTIATOR_CLUSTERS, ARCHETYPES,
     YOUR_SKILLS, YOUR_PROFILE,
-    CAP_EXEMPT_EMPLOYER_KEYWORDS,
-    VERIFIED_H1B_SPONSORS,
-    CAP_EXEMPT_BONUS, MATCH_THRESHOLD,
+    MATCH_THRESHOLD, CAP_EXEMPT_BONUS,
+    GREEN_FLAG_BONUS, GREEN_FLAG_BONUS_CAP, UNCONFIRMED_DURATION_PENALTY,
+    HOME_METRO, RELOCATION_TIERS,
 )
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Stops all scoring if daily quota is confirmed exhausted this run
 DAILY_QUOTA_EXHAUSTED = False
 
 
+def _text_of(job: dict) -> str:
+    return " ".join([
+        job.get("title", ""), job.get("description", ""),
+        job.get("company", ""), job.get("location", ""),
+    ]).lower()
+
+
 # ─────────────────────────────────────────────────────────────
-# EMPLOYMENT TYPE DETECTION
-# Returns: "short_contract", "long_contract", "full-time", "unknown"
+# FORMAT DETECTION
+# Returns one of:
+#   "contract_confirmed"    1-12 months, stated
+#   "contract_unconfirmed"  contract signal, no duration stated
+#   "internship"            paid internship or co-op
+#   "fulltime"              full-time / permanent
+#   "out_of_range"          13+ months stated
 # ─────────────────────────────────────────────────────────────
 
-def detect_employment_type(job: dict) -> str:
-    text = (job.get("title","") + " " + job.get("description","") + " " + job.get("company","")).lower()
+def detect_format(job: dict) -> str:
+    text = _text_of(job)
+    title = job.get("title", "").lower()
 
-    # Check for explicit short contract (≤ 6 months) first
-    for pattern in SHORT_CONTRACT_PATTERNS:
+    is_internship = any(kw in title for kw in INTERNSHIP_KEYWORDS) or \
+                    any(kw in text for kw in INTERNSHIP_KEYWORDS[:3])
+
+    # An explicit out-of-range duration wins over everything except internships,
+    # since a 15-month "contract" is a full-time role wearing a contract label.
+    for pattern in OUT_OF_RANGE_DURATION_PATTERNS:
         if pattern.search(text):
-            return "short_contract"
+            return "internship" if is_internship else "out_of_range"
 
-    # Check for explicit long contract (> 6 months)
-    for pattern in LONG_CONTRACT_PATTERNS:
+    for pattern in IN_RANGE_DURATION_PATTERNS:
         if pattern.search(text):
-            return "long_contract"
+            return "internship" if is_internship else "contract_confirmed"
 
-    # Generic contract keywords (duration unknown — treat conservatively as long)
-    for kw in GENERIC_CONTRACT_KEYWORDS:
-        if kw in text:
-            return "long_contract"   # Unknown duration = treat as full-time rules
+    if is_internship:
+        return "internship"
 
-    # Full-time signals
-    for kw in FULLTIME_KEYWORDS:
-        if kw in text:
-            return "full-time"
+    if any(kw in text for kw in CONTRACT_SIGNAL_KEYWORDS):
+        return "contract_unconfirmed"
 
-    return "unknown"   # No signal — treat as full-time (conservative)
+    if any(kw in text for kw in FULLTIME_KEYWORDS):
+        return "fulltime"
+
+    return "fulltime"   # no signal at all — treat conservatively
 
 
 # ─────────────────────────────────────────────────────────────
-# CAP-EXEMPT EMPLOYER CHECKS
+# TIERING
 # ─────────────────────────────────────────────────────────────
+
+def assign_tier(job: dict, fmt: str) -> int:
+    """Tier 4 is reserved for the full-time cap-exempt lane."""
+    if fmt == "fulltime":
+        return 4
+
+    company = job.get("company", "").lower()
+    desc_head = job.get("description", "").lower()[:1200]
+    blob = f"{company} {desc_head}"
+
+    if any(kw in blob for kw in TIER1_HIGHER_ED_KEYWORDS):
+        return 1
+    if any(kw in blob for kw in TIER2_LIFE_SCIENCES_KEYWORDS):
+        return 2
+    if any(kw in blob for kw in TIER3_OTHER_KEYWORDS):
+        return 3
+    return 3
+
 
 def check_cap_exempt(job: dict) -> tuple[bool, bool]:
     """Returns (is_cap_exempt, is_verified_h1b_sponsor)."""
     company_lower = job.get("company", "").lower()
-    desc_lower    = job.get("description", "").lower()[:600]
-
-    cap_exempt = any(
-        kw in company_lower or kw in desc_lower
-        for kw in CAP_EXEMPT_EMPLOYER_KEYWORDS
-    )
-    verified = any(
-        sponsor in company_lower
-        for sponsor in VERIFIED_H1B_SPONSORS
-    )
+    desc_lower = job.get("description", "").lower()[:600]
+    cap_exempt = any(kw in company_lower or kw in desc_lower
+                     for kw in CAP_EXEMPT_EMPLOYER_KEYWORDS)
+    verified = any(s in company_lower for s in VERIFIED_H1B_SPONSORS)
     return cap_exempt, verified
+
+
+def detect_anti_pattern(job: dict) -> str:
+    """Returns the anti-pattern label if the posting trips one, else ''."""
+    text = _text_of(job)
+    for label, phrases in ANTI_PATTERNS.items():
+        hits = sum(1 for p in phrases if p in text)
+        # Two hits required so a single passing mention does not disqualify.
+        if hits >= 2:
+            return label
+    return ""
+
+
+def find_green_flags(job: dict) -> list:
+    text = _text_of(job)
+    return [kw for kw in GREEN_FLAG_KEYWORDS if kw in text]
+
+
+def location_is_workable(job: dict, tier: int) -> tuple[bool, str]:
+    loc = (job.get("location", "") + " " + job.get("description", "")[:300]).lower()
+    if any(k in loc for k in ["remote", "work from home", "telecommute", "virtual", "anywhere"]):
+        return True, "Remote"
+    if any(k in loc for k in ["boston", "cambridge", "massachusetts", ", ma", "somerville",
+                              "brookline", "medford", "waltham", "burlington", "watertown",
+                              "quincy", "newton", "worcester", "chestnut hill"]):
+        return True, "Boston metro"
+    if tier in RELOCATION_TIERS:
+        return True, "Relocation"
+    return False, "Out of area (Tier 3+)"
 
 
 # ─────────────────────────────────────────────────────────────
 # LOCAL FILTER
+# Signature kept as a 5-tuple for run_once.py compatibility.
+# Extra metadata is written onto the job dict.
 # ─────────────────────────────────────────────────────────────
 
 def passes_local_filter(job: dict) -> tuple[bool, str, str, bool, bool]:
-    """
-    Returns (passes, rejection_reason, emp_type, is_cap_exempt, is_verified).
-    """
-    text = (job.get("title","") + " " + job.get("description","") + " " + job.get("company","")).lower()
+    text = _text_of(job)
 
-    # 1. Hard dealbreakers — apply to ALL roles
+    # 1. Hard dealbreakers, including unpaid
     for kw in DEALBREAKER_KEYWORDS:
-        if kw.lower() in text:
+        if kw in text:
             return False, f"Dealbreaker: '{kw}'", "unknown", False, False
 
-    # 2. Seniority — whole-word match
+    # 2. Seniority, whole-word match on the title
     padded_title = f" {job.get('title','').lower()} "
     for word in REJECT_SENIORITY_KEYWORDS:
         if f" {word} " in padded_title:
             return False, f"Too senior: '{word}' in title", "unknown", False, False
 
-    # 3. Description length — if too short, try fetching from the URL
+    # 3. Backfill a thin description from the posting URL
     if len(job.get("description", "")) < 50:
         fetched = _try_fetch_description(job.get("url", ""))
         if fetched and len(fetched) > 50:
             job["description"] = fetched
         elif len(job.get("description", "")) < 20:
-            # Still nothing usable — use title + company as minimal description
-            job["description"] = f"Job at {job.get('company','')}: {job.get('title','')}. Full description at {job.get('url','')}."
+            job["description"] = (f"Job at {job.get('company','')}: {job.get('title','')}. "
+                                  f"Full description at {job.get('url','')}.")
+        text = _text_of(job)
 
-    # 4. Detect employment type
-    emp_type = detect_employment_type(job)
-
-    # 5. Short contract (≤ 6 months) → ACCEPT regardless of employer
-    if emp_type == "short_contract":
-        cap_exempt, verified = check_cap_exempt(job)
-        return True, "", emp_type, cap_exempt, verified
-
-    # 6. Full-time / long contract / unknown → must be cap-exempt employer
+    # 4. Format and tier
+    fmt = detect_format(job)
+    tier = assign_tier(job, fmt)
     cap_exempt, verified = check_cap_exempt(job)
-    if cap_exempt:
-        return True, "", emp_type, cap_exempt, verified
-    else:
-        return False, "Full-time at non-cap-exempt org — no H-1B pathway", emp_type, False, False
+
+    job["format"] = fmt
+    job["tier"] = tier
+    job["tier_label"] = TIER_LABELS[tier]
+    job["green_flags"] = find_green_flags(job)
+
+    # 5. Duration out of range
+    if fmt == "out_of_range":
+        return False, "Contract longer than 12 months", fmt, cap_exempt, verified
+
+    # 6. Undergraduate-only internships
+    if fmt == "internship":
+        for kw in UNDERGRAD_ONLY_KEYWORDS:
+            if kw in text:
+                return False, f"Undergraduate-only internship: '{kw}'", fmt, cap_exempt, verified
+
+    # 7. Full-time lane requires a cap-exempt employer
+    if fmt == "fulltime" and not cap_exempt:
+        return False, "Full-time at non-cap-exempt org", fmt, cap_exempt, verified
+
+    # 8. Anti-patterns
+    anti = detect_anti_pattern(job)
+    if anti:
+        job["anti_pattern"] = anti
+        return False, f"Anti-pattern: {anti}", fmt, cap_exempt, verified
+
+    # 9. Geography
+    workable, loc_note = location_is_workable(job, tier)
+    job["location_note"] = loc_note
+    if not workable:
+        return False, f"Location not workable: {job.get('location','')}", fmt, cap_exempt, verified
+
+    return True, "", fmt, cap_exempt, verified
 
 
 # ─────────────────────────────────────────────────────────────
-# GEMINI SCORING
+# PROMPT
 # ─────────────────────────────────────────────────────────────
+
+def _clusters_block() -> str:
+    lines = []
+    for num, c in CAPABILITY_CLUSTERS.items():
+        star = " [DIFFERENTIATOR]" if c["differentiator"] else ""
+        lines.append(f"{num}. {c['name']}{star}\n   Evidence: {c['evidence']}")
+    return "\n".join(lines)
+
+
+def _archetypes_block(tier: int) -> str:
+    arche = ARCHETYPES.get(tier if tier in ARCHETYPES else 3, [])
+    return "\n".join(
+        f"- {name} (clusters {', '.join(str(c) for c in clusters)})"
+        for name, clusters in arche
+    )
+
 
 SCORING_PROMPT = """
-You are a strict, honest job match evaluator for Anjali Kandimalla.
-Score conservatively — 80+ means a genuinely strong, realistic application. Do NOT inflate scores.
+You are a strict, honest job match evaluator for Anjali Kandimalla. Score conservatively.
+Do not inflate. An inflated score costs her a wasted application.
 
 CANDIDATE PROFILE:
 {profile}
 
-TWO RESUME VERSIONS AVAILABLE:
+════════════════════════════════════════
+CAPABILITY CLUSTERS
+Role fit is judged on how many of these the job actually REQUIRES, not on whether
+the job title resembles hers. Clusters marked DIFFERENTIATOR are rare in the
+candidate pool and should be weighted heavily when the job requires them.
+════════════════════════════════════════
+{clusters}
 
-A) "Program Management" — Use when job emphasizes:
-   - Titles with: Program Manager, Project Manager, Coordinator, Project Lead
-   - Coordination, scheduling, stakeholder alignment, multi-project tracking
-   - Working across faculty/teams, vendor/CRO management
-   - Industries: higher ed, pharma R&D, nonprofit programs, research administration
-   - Lead bullets: EDGE course coordination, Esperion CRO management, MWIN internship operations
+════════════════════════════════════════
+STRONG-FIT ARCHETYPES FOR THIS TIER ({tier_label})
+════════════════════════════════════════
+{archetypes}
 
-B) "Operations" — Use when job emphasizes:
-   - Titles with: Operations Manager, Operations Analyst, Process Lead, Workflow Lead
-   - Building/improving systems, process improvement, workflow design
-   - Automation, SLA management, infrastructure-from-scratch
-   - Companies needing someone to fix or build out broken processes
-   - Lead bullets: Esperion SharePoint-from-scratch, Deloitte VBA automation, EDGE SLA design
-
-JOB POSTING:
+════════════════════════════════════════
+JOB POSTING
+════════════════════════════════════════
 Title: {title}
 Company: {company}
 Location: {location}
-Employment Type: {emp_type}
+Format: {fmt}
+Tier: {tier_label}
+Green flags detected: {green_flags}
 Description:
 {description}
 
 ════════════════════════════════════════
-HARD DISQUALIFIERS — score 0 immediately:
+HARD DISQUALIFIERS — score 0 immediately
 ════════════════════════════════════════
-- Requires US citizenship, security clearance, or active secret/top secret clearance
-- Explicitly says "no visa sponsorship" or "must be authorized without sponsorship"
-- Requires 10+ years of experience (candidate has ~4-5 years)
-- Primary skill requirement is something candidate has NO background in:
-  (e.g., software engineering, clinical medicine, legal practice, investment management,
-   construction management, sales, or any role requiring a license she lacks)
-- Role is Director-level or above in scope even if not in title
-
-════════════════════════════════════════
-SCORE CAPS — apply before adding up:
-════════════════════════════════════════
-- Requires 7-9 years experience → cap EXPERIENCE_FIT at 8
-- 3+ core required skills completely missing from profile → cap SKILL_MATCH at 15
-- Primarily technical role (software, data engineering, DevOps) → cap ROLE_FIT at 10
-- Role requires license/cert candidate lacks (PMP/CAPM ok; CPA/JD/MD/PE not) → cap total at 60
+- Requires US citizenship or an active security clearance
+- Explicitly refuses visa sponsorship or requires authorization without sponsorship
+- Unpaid, stipend-only, or for academic credit only
+- Requires 8+ years of experience (candidate has ~5)
+- Requires a license she lacks: CPA, JD, MD, RN, PE. PMP and CAPM are fine.
+- Director-level or above in scope even if the title says otherwise
+- Primary skill is one she has no background in: software engineering, licensed
+  clinical care, legal practice, accounting, quota-carrying sales
+- The role is a site-based clinical research coordinator doing patient consent,
+  study visits, specimen collection or source documentation. Sponsor-side and
+  administrative study coordination is a GOOD fit; patient-facing is not.
 
 ════════════════════════════════════════
-SCORING CRITERIA (0-100 total):
+SCORE CAPS — apply before totalling
 ════════════════════════════════════════
-
-1. ROLE FIT (30 pts): How well does scope match ~4 yrs program/project/ops management?
-   Direct PM/Coordinator/Operations role at right level → 25-30
-   Adjacent operational role (analyst, specialist, admin) → 15-24
-   Tangentially related → 5-14
-   Completely different function → 0-4
-
-2. SKILL MATCH (35 pts): How many of candidate's skills appear in JD?
-   Candidate skills: {skills}
-   Match 7+ explicitly → 30-35
-   Match 4-6 → 20-29
-   Match 1-3 → 10-19
-   Match 0 or JD requires skills she doesn't have → 0-9
-
-3. EXPERIENCE FIT (20 pts):
-   Requires 0-4 yrs → 15-20 (good match)
-   Requires 4-6 yrs → 18-20 (ideal)
-   Requires 7-9 yrs → 5-10 (stretch)
-   Requires 10+ yrs → 0 (hard disqualifier above)
-
-4. ENVIRONMENT FIT (15 pts):
-   Higher ed, healthcare, research, nonprofits, consulting → 12-15
-   Corporate operations at mid-size company → 8-11
-   Highly niche industry with no transferable context → 3-7
-   Domain candidate cannot function in → 0-2
+- Requires 6-7 years experience → cap LEVEL_FIT at 6
+- 3+ core required skills entirely absent from her profile → cap EVIDENCE_MATCH at 12
+- Role is primarily technical (software, data engineering, DevOps) → cap ROLE_FIT at 8
+- Job requires Jira, Tableau, Power BI, Asana, Monday.com, SQL or Python as a
+  CORE DAILY tool → cap EVIDENCE_MATCH at 20. Her exposure is coursework and
+  self-learning only. Do not credit these as professional strengths.
+- Job is primarily dedicated event planning → cap ROLE_FIT at 12
 
 ════════════════════════════════════════
-RESPOND IN EXACTLY THIS FORMAT — nothing else:
+SCORING (0-100)
+════════════════════════════════════════
+
+1. ROLE_FIT (0-35) — cluster coverage, not title matching
+   5+ clusters required including 2+ DIFFERENTIATOR clusters → 30-35
+   4-5 clusters including 1 DIFFERENTIATOR                   → 24-29
+   3-4 clusters, all non-differentiator                      → 15-23
+   1-2 clusters                                              → 5-14
+   Anti-pattern role                                         → 0
+
+2. EVIDENCE_MATCH (0-35) — you MUST cite specific evidence
+   For every capability you credit, name the concrete item from her profile that
+   backs it (for example "3-6 CROs at Esperion", "SharePoint built from scratch",
+   "SAB with 15+ KOLs", "sub-24h SLA at EDGE", "VBA automation at Deloitte").
+   If you cannot name a specific backing item, the match DOES NOT COUNT.
+   6+ credited capabilities with named evidence → 30-35
+   4-5 with named evidence                      → 22-29
+   2-3 with named evidence                      → 12-21
+   0-1                                          → 0-11
+
+3. LEVEL_FIT (0-15)
+   Requires 0-5 yrs, coordinator to manager level → 12-15
+   Requires 5-6 yrs                               → 8-11
+   Requires 6-7 yrs                               → 3-6
+   Requires 8+ yrs                                → 0 (disqualifier above)
+
+4. LOGISTICS_FIT (0-15)
+   Duration stated and 12 months or under, location workable, direct employer → 12-15
+   Duration stated, location workable, staffing agency intermediary           → 9-11
+   Duration not stated but contract signal present                            → 6-8
+   Location or start date awkward                                             → 0-5
+
+════════════════════════════════════════
+RESPOND IN EXACTLY THIS FORMAT — nothing else
 ════════════════════════════════════════
 SCORE: [0-100]
-ROLE_FIT: [0-30]
-SKILL_MATCH: [0-35]
-EXPERIENCE_FIT: [0-20]
-ENVIRONMENT_FIT: [0-15]
-TOP_MATCHING_SKILLS: [comma-separated list from candidate skills appearing in JD]
-MISSING_SKILLS: [key skills JD requires that candidate lacks, or "None"]
+ROLE_FIT: [0-35]
+EVIDENCE_MATCH: [0-35]
+LEVEL_FIT: [0-15]
+LOGISTICS_FIT: [0-15]
+CLUSTERS_MATCHED: [comma-separated cluster numbers the job requires, e.g. 1, 2, 5]
+EVIDENCE_CITED: [for each credited capability, "capability — backing item from profile"; semicolon separated]
+MISSING_SKILLS: [core requirements she lacks, or "None"]
+GAP_SEVERITY: [Blocking / Significant / Minor / None — Blocking means do not apply]
+OVERQUALIFICATION_RISK: [High / Medium / Low / N-A — N-A for non-internship roles]
 RESUME_VERSION: [Program Management OR Operations]
-RESUME_TAILORING: [1-2 sentences with concrete advice on which bullets to emphasize for this specific role, and whether to add the Aadrika Exports supply chain bullet or Trine MS coursework]
-SUMMARY: [2 sentences: what makes this a fit and what's the biggest gap]
+RESUME_TAILORING: [1-2 sentences naming which specific bullets to lead with for this
+role, and whether to add the Aadrika Exports supply chain experience or Trine MS coursework]
+SUMMARY: [2 sentences: what makes this a fit, and the single biggest gap]
 """
 
-def score_with_gemini(job: dict, emp_type: str) -> dict | None:
-    global DAILY_QUOTA_EXHAUSTED
 
-    # If daily quota already confirmed exhausted, skip immediately
+def score_with_gemini(job: dict, fmt: str, tier: int) -> dict | None:
+    global DAILY_QUOTA_EXHAUSTED
     if DAILY_QUOTA_EXHAUSTED:
         return None
 
     prompt = SCORING_PROMPT.format(
         profile=YOUR_PROFILE,
-        title=job.get("title",""),
-        company=job.get("company",""),
-        location=job.get("location",""),
-        emp_type=emp_type,
-        description=job.get("description","")[:3000],
-        skills=", ".join(YOUR_SKILLS),
+        clusters=_clusters_block(),
+        archetypes=_archetypes_block(tier),
+        title=job.get("title", ""),
+        company=job.get("company", ""),
+        location=job.get("location", ""),
+        fmt=fmt,
+        tier_label=TIER_LABELS.get(tier, ""),
+        green_flags=", ".join(job.get("green_flags", [])) or "none",
+        description=job.get("description", "")[:3500],
     )
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
+            model="gemini-2.5-flash", contents=prompt,
         )
         return parse_score(response.text.strip())
-
     except Exception as e:
         err = str(e)
         is_quota = "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower()
-
         if not is_quota:
             print(f"    ⚠️  Gemini error: {e}")
             return None
-
-        # Distinguish daily limit vs per-minute limit
-        is_daily = "PerDayPer" in err or "GenerateRequestsPerDay" in err
-
-        if is_daily:
-            # Daily quota gone — no point retrying ANY jobs this run
+        if "PerDayPer" in err or "GenerateRequestsPerDay" in err:
             DAILY_QUOTA_EXHAUSTED = True
-            print(f"    🚫 Daily quota exhausted — skipping all remaining scoring this cycle.")
-            print(f"       Quota resets at midnight UTC (8 PM Eastern).")
-            print(f"       Or create a new API key at aistudio.google.com for fresh quota.")
+            print("    🚫 Daily quota exhausted — skipping remaining scoring this cycle.")
+            print("       Resets at midnight UTC (8 PM Eastern).")
             return None
-        else:
-            # Per-minute limit — wait and retry once
-            print(f"    ⏳ Per-minute rate limit — waiting 65s...")
-            time.sleep(65)
-            try:
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt,
-                )
-                return parse_score(response.text.strip())
-            except Exception as e2:
-                err2 = str(e2)
-                if "PerDayPer" in err2 or "GenerateRequestsPerDay" in err2:
-                    DAILY_QUOTA_EXHAUSTED = True
-                    print(f"    🚫 Daily quota exhausted — skipping remaining scoring.")
-                else:
-                    print(f"    ⚠️  Gemini retry failed: {e2}")
-                return None
+        print("    ⏳ Per-minute rate limit — waiting 65s...")
+        time.sleep(65)
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash", contents=prompt,
+            )
+            return parse_score(response.text.strip())
+        except Exception as e2:
+            if "PerDayPer" in str(e2) or "GenerateRequestsPerDay" in str(e2):
+                DAILY_QUOTA_EXHAUSTED = True
+                print("    🚫 Daily quota exhausted — skipping remaining scoring.")
+            else:
+                print(f"    ⚠️  Gemini retry failed: {e2}")
+            return None
+
+
+# Every text field the model returns, parsed. The previous version silently
+# dropped RESUME_VERSION and RESUME_TAILORING, so the sheet always said
+# "Program Management" with an empty tailoring column.
+_INT_FIELDS = {
+    "SCORE:": "score",
+    "ROLE_FIT:": "role_fit",
+    "EVIDENCE_MATCH:": "evidence_match",
+    "LEVEL_FIT:": "level_fit",
+    "LOGISTICS_FIT:": "logistics_fit",
+}
+_TEXT_FIELDS = {
+    "CLUSTERS_MATCHED:": "clusters_matched",
+    "EVIDENCE_CITED:": "evidence_cited",
+    "MISSING_SKILLS:": "missing_skills",
+    "GAP_SEVERITY:": "gap_severity",
+    "OVERQUALIFICATION_RISK:": "overqualification_risk",
+    "RESUME_VERSION:": "resume_version",
+    "RESUME_TAILORING:": "resume_tailoring",
+    "SUMMARY:": "summary",
+}
+
 
 def parse_score(raw: str) -> dict:
-    r = {"score":0,"role_fit":0,"skill_match":0,"experience_fit":0,
-         "environment_fit":0,"top_matching_skills":"","missing_skills":"","summary":""}
+    r = {v: 0 for v in _INT_FIELDS.values()}
+    r.update({v: "" for v in _TEXT_FIELDS.values()})
     for line in raw.split("\n"):
         line = line.strip()
-        def grab_int(key):
-            try: return int(re.search(r'\d+', line).group())
-            except: return 0
-        if line.startswith("SCORE:"): r["score"] = grab_int("score")
-        elif line.startswith("ROLE_FIT:"): r["role_fit"] = grab_int("role_fit")
-        elif line.startswith("SKILL_MATCH:"): r["skill_match"] = grab_int("skill_match")
-        elif line.startswith("EXPERIENCE_FIT:"): r["experience_fit"] = grab_int("experience_fit")
-        elif line.startswith("ENVIRONMENT_FIT:"): r["environment_fit"] = grab_int("environment_fit")
-        elif line.startswith("TOP_MATCHING_SKILLS:"): r["top_matching_skills"] = line.split(":",1)[1].strip()
-        elif line.startswith("MISSING_SKILLS:"): r["missing_skills"] = line.split(":",1)[1].strip()
-        elif line.startswith("SUMMARY:"): r["summary"] = line.split(":",1)[1].strip()
+        for prefix, key in _INT_FIELDS.items():
+            if line.upper().startswith(prefix):
+                m = re.search(r"\d+", line)
+                r[key] = int(m.group()) if m else 0
+                break
+        else:
+            for prefix, key in _TEXT_FIELDS.items():
+                if line.upper().startswith(prefix):
+                    r[key] = line.split(":", 1)[1].strip().strip("[]")
+                    break
+    if not r["resume_version"]:
+        r["resume_version"] = "Program Management"
     return r
 
 
@@ -313,82 +440,111 @@ def parse_score(raw: str) -> dict:
 # MASTER EVALUATOR
 # ─────────────────────────────────────────────────────────────
 
-def evaluate_job(job: dict) -> dict | None:
-    passes, reason, emp_type, cap_exempt, verified = passes_local_filter(job)
+FORMAT_LABELS = {
+    "contract_confirmed":   "Contract (duration confirmed, ≤12mo)",
+    "contract_unconfirmed": "Contract (duration NOT stated)",
+    "internship":           "Internship / Co-op",
+    "fulltime":             "Full-time (cap-exempt)",
+}
 
+
+def evaluate_job(job: dict) -> dict | None:
+    passes, reason, fmt, cap_exempt, verified = passes_local_filter(job)
     if not passes:
         print(f"    ❌ REJECTED ({reason}): {job.get('title')} @ {job.get('company')}")
         return None
 
-    print(f"    🤖 Scoring [{emp_type}]: {job.get('title')} @ {job.get('company')}...")
-    scoring = score_with_gemini(job, emp_type)
+    tier = job.get("tier", 3)
+    print(f"    🤖 Scoring [T{tier} | {fmt}]: {job.get('title')} @ {job.get('company')}...")
+    scoring = score_with_gemini(job, fmt, tier)
     if not scoring:
         return None
 
-    raw_score   = scoring["score"]
-    bonus       = CAP_EXEMPT_BONUS if cap_exempt and emp_type != "short_contract" else 0
-    final_score = min(100, raw_score + bonus)
+    raw_score = scoring["score"]
+
+    green_flags = job.get("green_flags", [])
+    green_bonus = min(len(green_flags) * GREEN_FLAG_BONUS, GREEN_FLAG_BONUS_CAP)
+    unconfirmed_penalty = UNCONFIRMED_DURATION_PENALTY if fmt == "contract_unconfirmed" else 0
+    cap_bonus = CAP_EXEMPT_BONUS if (fmt == "fulltime" and cap_exempt) else 0
+
+    final_score = max(0, min(100, raw_score + green_bonus + cap_bonus - unconfirmed_penalty))
+
+    if scoring.get("gap_severity", "").lower().startswith("blocking"):
+        print(f"    🚫 Blocking gap: {job.get('title')} @ {job.get('company')}")
+        return None
 
     if final_score < MATCH_THRESHOLD:
         print(f"    📉 Below threshold ({final_score}%): {job.get('title')} @ {job.get('company')}")
         return None
 
-    # Build employment type label for display
-    type_labels = {
-        "short_contract": "Contract (≤6 months)",
-        "long_contract":  "Full-time / Long Contract",
-        "full-time":      "Full-time",
-        "unknown":        "Full-time",
-    }
-    type_display = type_labels.get(emp_type, emp_type)
-
-    # H-1B status label
-    if emp_type == "short_contract":
-        h1b_status = "N/A (Contract — CPT eligible)"
-    elif verified:
-        h1b_status = "✅ Verified Sponsor (2024-2026)"
-    elif cap_exempt:
-        h1b_status = "⭐ Cap-Exempt (verify on myvisajobs.com)"
+    if fmt == "fulltime":
+        h1b_status = ("✅ Verified Sponsor" if verified
+                      else "⭐ Cap-Exempt (verify on myvisajobs.com)")
     else:
-        h1b_status = "❌ Not cap-exempt"
+        h1b_status = "N/A (contract or internship)"
 
-    print(f"    ✅ MATCH ({final_score}%) [{type_display}]: {job.get('title')} @ {job.get('company')}")
+    print(f"    ✅ MATCH ({final_score}%) [T{tier}]: {job.get('title')} @ {job.get('company')}")
 
     return {
-        # Job info
-        "id":                   job["id"],
-        "title":                job["title"],
-        "company":              job["company"],
-        "location":             job["location"],
-        "url":                  job["url"],
-        "source":               job["source"],
-        "posted_date":          job["posted_date"],
-        "description_snippet":  job["description"][:400] + "..." if len(job["description"]) > 400 else job["description"],
-        # Employment type
-        "employment_type":      type_display,
-        "is_short_contract":    emp_type == "short_contract",
-        # H-1B / cap-exempt
-        "is_cap_exempt":        cap_exempt,
-        "is_verified_h1b":      verified,
-        "h1b_status":           h1b_status,
-        "h1b_verify_url":       f"https://www.myvisajobs.com/Search/?cname={job.get('company','').replace(' ','+')}",
+        "id":                    job["id"],
+        "title":                 job["title"],
+        "company":               job["company"],
+        "location":              job["location"],
+        "url":                   job["url"],
+        "source":                job["source"],
+        "posted_date":           job["posted_date"],
+        "description_snippet":   (job["description"][:400] + "..."
+                                  if len(job["description"]) > 400 else job["description"]),
+        # Tier and format
+        "tier":                  tier,
+        "tier_label":            TIER_LABELS.get(tier, ""),
+        "format":                fmt,
+        "employment_type":       FORMAT_LABELS.get(fmt, fmt),
+        "duration_confidence":   ("confirmed" if fmt == "contract_confirmed"
+                                  else "unconfirmed" if fmt == "contract_unconfirmed"
+                                  else "n/a"),
+        "is_short_contract":     fmt in ("contract_confirmed", "contract_unconfirmed", "internship"),
+        "location_note":         job.get("location_note", ""),
+        "green_flags":           ", ".join(green_flags),
+        # H-1B (Tier 4 only)
+        "is_cap_exempt":         cap_exempt,
+        "is_verified_h1b":       verified,
+        "h1b_status":            h1b_status,
+        "h1b_verify_url":        f"https://www.myvisajobs.com/Search/?cname={job.get('company','').replace(' ','+')}",
         # Scores
-        "match_score":          final_score,
-        "raw_score":            raw_score,
-        "cap_exempt_bonus":     bonus,
-        "role_fit":             scoring["role_fit"],
-        "skill_match":          scoring["skill_match"],
-        "experience_fit":       scoring["experience_fit"],
-        "environment_fit":      scoring["environment_fit"],
-        "top_matching_skills":  scoring.get("top_matching_skills", ""),
-        "missing_skills":       scoring.get("missing_skills", ""),
-        "resume_version":       scoring.get("resume_version", "Program Management"),
-        "resume_tailoring":     scoring.get("resume_tailoring", ""),
-        "summary":              scoring.get("summary", ""),
-        "evaluated_at":         __import__('datetime').datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "match_score":           final_score,
+        "raw_score":             raw_score,
+        "green_flag_bonus":      green_bonus,
+        "unconfirmed_penalty":   unconfirmed_penalty,
+        "cap_exempt_bonus":      cap_bonus,
+        "role_fit":              scoring["role_fit"],
+        "evidence_match":        scoring["evidence_match"],
+        "level_fit":             scoring["level_fit"],
+        "logistics_fit":         scoring["logistics_fit"],
+        # Back-compat aliases for logger.py's existing columns
+        "skill_match":           scoring["evidence_match"],
+        "experience_fit":        scoring["level_fit"],
+        "environment_fit":       scoring["logistics_fit"],
+        "top_matching_skills":   scoring.get("evidence_cited", ""),
+        # Detail
+        "clusters_matched":      scoring.get("clusters_matched", ""),
+        "evidence_cited":        scoring.get("evidence_cited", ""),
+        "missing_skills":        scoring.get("missing_skills", ""),
+        "gap_severity":          scoring.get("gap_severity", ""),
+        "overqualification_risk": scoring.get("overqualification_risk", ""),
+        "resume_version":        scoring.get("resume_version", "Program Management"),
+        "resume_tailoring":      scoring.get("resume_tailoring", ""),
+        "summary":               scoring.get("summary", ""),
+        "evaluated_at":          __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
+
+
+def sort_matches(matches: list) -> list:
+    """Strict tier sort, then fit score inside the tier."""
+    return sorted(matches, key=lambda m: (m.get("tier", 9), -m.get("match_score", 0)))
+
+
 def _try_fetch_description(url: str) -> str:
-    """Best-effort fetch of full job description. Returns clean text or empty string."""
     if not url or not url.startswith("http"):
         return ""
     try:
