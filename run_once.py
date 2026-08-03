@@ -23,11 +23,12 @@ import re
 import time
 from datetime import datetime
 
-from config import MATCH_THRESHOLD, REJECT_SENIORITY_KEYWORDS
+from config import MATCH_THRESHOLD, REJECT_SENIORITY_KEYWORDS, TIER_LABELS
 from database import init_db, is_seen, mark_seen, get_seen_count
 from scraper import scrape_all_sources
+from sources_contract import scrape_all_contract_sources
 from org_scraper import scrape_all_orgs
-from scorer import evaluate_job
+from scorer import evaluate_job, sort_matches
 import scorer  # read scorer.DAILY_QUOTA_EXHAUSTED after evaluate_job()
 from logger import log_to_sheets, send_digest_email
 from daily_log import log_scraped_job, batch_log_unscored, send_unscored_digest
@@ -58,12 +59,23 @@ RELEVANT_TITLE_KEYWORDS = [
     "program lead", "project lead", "operations lead",
     "program officer", "project officer",
     "program analyst", "project analyst",
-    "grants manager", "grants coordinator",
-    "research coordinator", "research program",
-    "clinical program", "clinical coordinator",
+    "grants manager", "grants coordinator", "grants administrator",
+    "research coordinator", "research program", "research administrator",
+    "sponsored programs", "sponsored research",
+    "clinical program", "clinical coordinator", "clinical operations",
+    "study coordinator", "study start-up", "trial coordinator",
+    "alliance management", "clinical outsourcing",
     "success manager", "engagement manager",
     "implementation manager", "delivery manager",
     "portfolio manager", "initiative manager",
+    "special projects", "academic program", "faculty affairs",
+    "pmo analyst", "pmo coordinator", "program operations",
+    # Internship lane
+    "program management intern", "project management intern",
+    "operations intern", "program intern", "project intern",
+    "pmo intern", "mba intern", "graduate intern",
+    "strategy and operations intern", "business operations intern",
+    "co-op", "program co-op", "project co-op",
 ]
 
 TITLE_BLOCKLIST = [
@@ -225,8 +237,10 @@ def run() -> None:
     print("📡 Scraping sources...")
     org_jobs = scrape_all_orgs()
     general_jobs = scrape_all_sources()
-    all_jobs = _dedupe_jobs(org_jobs + general_jobs)
-    print(f"\nScraped: {len(org_jobs)} org + {len(general_jobs)} general = {len(all_jobs)} unique jobs")
+    contract_jobs = scrape_all_contract_sources()
+    all_jobs = _dedupe_jobs(org_jobs + general_jobs + contract_jobs)
+    print(f"\nScraped: {len(org_jobs)} org + {len(general_jobs)} general "
+          f"+ {len(contract_jobs)} contract = {len(all_jobs)} unique jobs")
 
     # 2) Remove jobs already seen from previous runs.
     new_jobs = [j for j in all_jobs if not is_seen(j.get("id", ""))]
@@ -351,28 +365,32 @@ def run() -> None:
 
     # 7) Send one digest of THIS run's top matches.
     if matches:
-        top = sorted(matches, key=lambda x: x.get("match_score", 0), reverse=True)[:DIGEST_TOP_N]
+        top = sort_matches(matches)[:DIGEST_TOP_N]
         print(f"\n📧 Sending digest: top {len(top)} of {len(matches)} matches from this run...")
         send_digest_email(top)
     else:
-        print("\nNo ≥80% matches this run — no match digest sent.")
+        print(f"\nNo ≥{MATCH_THRESHOLD}% matches this run — no match digest sent.")
 
     # 8) Summary.
     elapsed = int((datetime.now() - start).total_seconds())
-    contracts = [m for m in matches if m.get("is_short_contract")]
-    fulltime = [m for m in matches if not m.get("is_short_contract")]
+    by_tier = {}
+    for m in matches:
+        by_tier.setdefault(m.get("tier", 9), []).append(m)
 
     print("\n" + "-" * 72)
     print(f"Done in {elapsed}s | Attempted: {scored_attempts} | Matches ≥{MATCH_THRESHOLD}%: {len(matches)}")
-    print(f"  ({len(contracts)} contract, {len(fulltime)} full-time/cap-exempt)")
+    for tier in sorted(by_tier):
+        print(f"  {TIER_LABELS.get(tier, f'Tier {tier}')}: {len(by_tier[tier])}")
     if deferred and not quota_exhausted:
         print(f"  Deferred for next run: {len(deferred)}")
     if quota_exhausted:
         print("  Quota exhausted: unscored jobs were logged + emailed.")
     if matches:
-        for m in sorted(matches, key=lambda x: x.get("match_score", 0), reverse=True)[:8]:
-            badge = "📋" if m.get("is_short_contract") else ("✅" if m.get("is_verified_h1b") else "⭐")
-            print(f"  {m.get('match_score')}% {badge} {m.get('title')} @ {m.get('company')}")
+        for m in sort_matches(matches)[:8]:
+            dur = m.get("duration_confidence", "")
+            flag = " ⚠️unconfirmed" if dur == "unconfirmed" else ""
+            print(f"  T{m.get('tier','?')} {m.get('match_score')}% "
+                  f"{m.get('title')} @ {m.get('company')}{flag}")
     print("-" * 72 + "\n")
 
 
