@@ -1,27 +1,75 @@
 # =============================================================================
 # .github/workflows/job_bot.yml
 #
-# Runs your job bot every 30 minutes for FREE.
-# Public repos = unlimited GitHub Actions minutes.
-# API keys stored as encrypted GitHub Secrets — never in code.
+# Runs the job bot THREE times a day, at 9:00 AM, 3:00 PM and 7:00 PM
+# Boston time (America/New_York).
+#
+# WHY TWO CRON LINES
+# GitHub Actions cron is UTC only and has no timezone support, so a single
+# fixed schedule drifts by an hour twice a year when DST changes. Both
+# schedules below are registered, and the `gate` job runs only the one that
+# matches the current US Eastern UTC offset:
+#
+#   EDT (mid-Mar to early Nov, UTC-4):  13:00, 19:00, 23:00 UTC
+#   EST (early Nov to mid-Mar, UTC-5):  14:00, 20:00, 00:00 UTC
+#
+# The gate keys off github.event.schedule (the cron string that fired) rather
+# than the wall-clock time at execution, so a delayed run still executes
+# instead of being skipped for arriving a few minutes late.
 # =============================================================================
 
 name: Job Bot — Scrape & Score
 
 on:
   schedule:
-    - cron: '0 */3 * * *'   # Every 3 hours, 24/7 (8 runs/day)
-  workflow_dispatch:           # Manual trigger from GitHub Actions tab
+    - cron: '0 13,19,23 * * *'   # EDT: 9am, 3pm, 7pm Boston
+    - cron: '0 14,20,0 * * *'    # EST: 9am, 3pm, 7pm Boston
+  workflow_dispatch:              # Manual trigger, always runs
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Suppress Node.js 20 warnings
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # ── Gate: run only the schedule matching the current Eastern offset ──
+  gate:
+    name: Check DST schedule
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Decide whether this schedule is the live one
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual trigger — running."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          OFFSET=$(TZ=America/New_York date +%z)
+          LOCAL=$(TZ=America/New_York date '+%Y-%m-%d %H:%M %Z')
+          SCHED="${{ github.event.schedule }}"
+          echo "Boston time: $LOCAL (offset $OFFSET)"
+          echo "Triggered by cron: $SCHED"
+
+          if [ "$OFFSET" = "-0400" ] && [ "$SCHED" = "0 13,19,23 * * *" ]; then
+            echo "EDT schedule is live — running."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$OFFSET" = "-0500" ] && [ "$SCHED" = "0 14,20,0 * * *" ]; then
+            echo "EST schedule is live — running."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Off-season schedule — skipping this run."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   run_bot:
     name: Scrape Jobs & Score Matches
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 55   # Each 3-hour run scores fresh jobs — up to 40 min.
-                          # Typical runs are 10-20 min.
+    timeout-minutes: 55   # 3 runs/day means larger batches, especially the
+                          # 9am run absorbing the overnight backlog.
 
     steps:
       # ── Step 1: Check out your code ─────────────────────────────
@@ -53,7 +101,6 @@ jobs:
         run: echo '${{ secrets.GOOGLE_CREDS_JSON }}' > google_creds.json
 
       # ── Step 6: Restore seen-jobs database from cache ───────────
-      # Keeps memory of every job already scored across all runs.
       - name: Restore seen_jobs database
         uses: actions/cache@v4
         with:
@@ -62,11 +109,11 @@ jobs:
           restore-keys: |
             seen-jobs-db-
 
-      # ── Step 7: Run one scrape + score cycle ─────────────────────
+      # ── Step 7: Run one scrape + score cycle ────────────────────
       - name: Run job bot cycle
         run: python run_once.py
 
-      # ── Step 8: Save updated database back to cache ──────────────
+      # ── Step 8: Save updated database back to cache ─────────────
       - name: Save seen_jobs database
         uses: actions/cache@v4
         if: always()
